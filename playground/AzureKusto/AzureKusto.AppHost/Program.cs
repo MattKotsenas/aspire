@@ -6,7 +6,13 @@ var builder = DistributedApplication.CreateBuilder(args);
 
 var kusto = builder.AddAzureKustoCluster("kusto")
     .RunAsEmulator();
-var db = kusto.AddDatabase("testdb");
+var db = kusto.AddDatabase("testdb").WithCreationScript(
+    """
+    .create database testdb persist (
+        @"/kustodata/dbs/testdb/md",
+        @"/kustodata/dbs/testdb/data"
+    )
+    """);
 
 builder.AddProject<Projects.AzureKusto_Worker>("worker")
     .WithReference(db)

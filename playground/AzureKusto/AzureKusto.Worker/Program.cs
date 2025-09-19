@@ -1,6 +1,8 @@
 using AzureKusto.Worker;
 using Kusto.Data;
+using Kusto.Data.Common;
 using Kusto.Data.Net.Client;
+using Kusto.Ingest;
 
 var builder = Host.CreateApplicationBuilder(args);
 builder.AddServiceDefaults();
@@ -20,6 +22,12 @@ builder.Services.AddSingleton(sp =>
 {
     var kcsb = sp.GetRequiredService<KustoConnectionStringBuilder>();
     return KustoClientFactory.CreateCslAdminProvider(kcsb);
+});
+builder.Services.AddSingleton(sp =>
+{
+    var kcsb = sp.GetRequiredService<KustoConnectionStringBuilder>();
+    var admin = sp.GetRequiredService<ICslAdminProvider>();
+    return KustoIngestFactory.CreateStreamingIngestClient(kcsb);
 });
 
 builder.Services.AddOptions<WorkerOptions>();

@@ -8,7 +8,9 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="System.Text.Json" VersionOverride="9.0.7" />
     <PackageReference Include="Microsoft.Azure.Kusto.Data" />
+    <PackageReference Include="Microsoft.Azure.Kusto.Ingest" VersionOverride="14.0.1" />
     <ProjectReference Include="..\..\Playground.ServiceDefaults\Playground.ServiceDefaults.csproj" />
   </ItemGroup>
 
