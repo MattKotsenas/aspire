@@ -31,6 +31,8 @@ internal sealed class IngestionWorker : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await IngestFromStream();
+        await IngestFromDataReader();
+        await IngestFromStorage();
 
         _logger.LogInformation("Ingestion complete");
         _workerOptions.CurrentValue.IsIngestionComplete = true;
@@ -65,9 +67,9 @@ internal sealed class IngestionWorker : BackgroundService
         table.Columns.Add("Timestamp", typeof(DateTime));
 
         // Add the rows (same as your inline data)
-        table.Rows.Add(11, "Alice", DateTime.Parse("2024-01-01T10:00:00Z"));
-        table.Rows.Add(22, "Bob", DateTime.Parse("2024-01-01T11:00:00Z"));
-        table.Rows.Add(33, "Charlie", DateTime.Parse("2024-01-01T12:00:00Z"));
+        table.Rows.Add(111, "Alice", DateTime.Parse("2024-01-01T10:00:00Z"));
+        table.Rows.Add(222, "Bob", DateTime.Parse("2024-01-01T11:00:00Z"));
+        table.Rows.Add(333, "Charlie", DateTime.Parse("2024-01-01T12:00:00Z"));
 
         // Create ingestion properties
         var ingestionProps = new KustoIngestionProperties
@@ -106,5 +108,42 @@ internal sealed class IngestionWorker : BackgroundService
 
         // Ingest from the stream
         await _ingestClient.IngestFromStreamAsync(stream, ingestionProps);
+    }
+
+    private async Task IngestFromStorage()
+    {
+        // CSV payload matching the target table schema
+        // (no header line needed unless you enabled it in ingestion mapping)
+        var csv = new StringBuilder();
+        csv.AppendLine("1111,Alice,2024-01-01T10:00:00Z");
+        csv.AppendLine("2222,Bob,2024-01-01T11:00:00Z");
+        csv.AppendLine("3333,Charlie,2024-01-01T12:00:00Z");
+
+        // Turn it into a file
+        string? file = null;
+        try
+        {
+            file = Path.GetTempFileName();
+            File.WriteAllText(file, csv.ToString());
+
+            // Configure ingestion properties
+            var ingestionProps = new KustoIngestionProperties(
+                databaseName: _adminClient.DefaultDatabaseName,
+                tableName: _workerOptions.CurrentValue.TableName
+            )
+            {
+                Format = DataSourceFormat.csv
+            };
+
+            // Ingest from the stream
+            await _ingestClient.IngestFromStorageAsync(file, ingestionProps);
+        }
+        finally
+        {
+            if (file is not null)
+            {
+                File.Delete(file);
+            }
+        }
     }
 }

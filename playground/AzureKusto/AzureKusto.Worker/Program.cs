@@ -27,6 +27,9 @@ builder.Services.AddSingleton(sp =>
 {
     var kcsb = sp.GetRequiredService<KustoConnectionStringBuilder>();
     var admin = sp.GetRequiredService<ICslAdminProvider>();
+
+    admin.ExecuteControlCommand(".alter table TestTable policy streamingingestion '{\"IsEnabled\": true}'");
+
     return KustoIngestFactory.CreateStreamingIngestClient(kcsb);
 });
 
