@@ -8,7 +8,14 @@ builder.AddAzureContainerAppEnvironment("infra");
 
 var kusto = builder.AddAzureKustoCluster("kusto")
     .RunAsEmulator();
-var db = kusto.AddReadWriteDatabase("testdb");
+var db = kusto.AddReadWriteDatabase("testdb")
+    .WithCreationScript(
+    """
+    .create database testdb persist (
+        @"/kustodata/dbs/testdb/md",
+        @"/kustodata/dbs/testdb/data"
+    );
+    """);
 
 builder.AddProject<Projects.AzureKusto_Worker>("worker")
     .WithReference(db)
