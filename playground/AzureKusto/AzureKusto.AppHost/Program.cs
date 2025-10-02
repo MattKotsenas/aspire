@@ -7,13 +7,17 @@ var builder = DistributedApplication.CreateBuilder(args);
 builder.AddAzureContainerAppEnvironment("infra");
 
 var kusto = builder.AddAzureKustoCluster("kusto")
-    .RunAsEmulator();
+    .RunAsEmulator(e =>
+    {
+        e.WithHostPort(62509);
+        e.WithImageTag("2025.07.23.0503-2530-63b8b70-master");
+    });
 var db = kusto.AddReadWriteDatabase("testdb")
     .WithCreationScript(
     """
     .create database testdb persist (
-        @"/kustodata/dbs/testdb/md",
-        @"/kustodata/dbs/testdb/data"
+        @"/kustodata/dbs/testdb",
+        @"/kustodata/dbs/testdb"
     );
     """);
 

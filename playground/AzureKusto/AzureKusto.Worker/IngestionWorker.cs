@@ -34,8 +34,8 @@ internal sealed class IngestionWorker : BackgroundService
 
         // Option 2: Seed as part of worker startup
         // This is another approach that is likely more versatile, where seeding occurs as part of startup (optionally only in development).
-        await ExecuteViaIngestClientAsync();
         await ExecuteViaAdminClientAsync();
+        await ExecuteViaIngestClientAsync();
 
         _logger.LogInformation("Ingestion complete");
         _workerOptions.CurrentValue.IsIngestionComplete = true;
@@ -70,6 +70,8 @@ internal sealed class IngestionWorker : BackgroundService
             TableName = _workerOptions.CurrentValue.TableName,
             Format = DataSourceFormat.csv
         };
+
+        await Task.Delay(5000, CancellationToken.None); // Wait for table creation to propagate
 
         using var reader = table.CreateDataReader();
         await _ingestClient.IngestFromDataReaderAsync(reader, ingestionProps);
