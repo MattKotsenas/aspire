@@ -1,7 +1,6 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System.Globalization;
 using Kusto.Data;
 using Kusto.Data.Common;
 using Kusto.Data.Net.Client;
@@ -48,8 +47,8 @@ internal sealed class AzureKustoHealthCheck : IHealthCheck
     {
         using var queryProvider = KustoClientFactory.CreateCslAdminProvider(_kcsb);
 
-        var results = await queryProvider.ExecuteControlCommandAsync<string>(".show cluster journal | where Event == \"ALTER-CLUSTER-ROWSTORES-POLICY\" | count", s_defaultClientRequestProperties).ConfigureAwait(false);
-        if (int.Parse(results.Single(), CultureInfo.InvariantCulture) > 0)
+        var results = await queryProvider.ExecuteControlCommandAsync<string>(".show version", s_defaultClientRequestProperties).ConfigureAwait(false);
+        if (results.Any())
         {
             return HealthCheckResult.Healthy();
         }

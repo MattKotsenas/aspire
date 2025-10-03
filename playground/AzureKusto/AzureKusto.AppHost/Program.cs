@@ -10,16 +10,8 @@ var kusto = builder.AddAzureKustoCluster("kusto")
     .RunAsEmulator(e =>
     {
         e.WithHostPort(62509);
-        e.WithImageTag("2025.07.23.0503-2530-63b8b70-master");
     });
-var db = kusto.AddReadWriteDatabase("testdb")
-    .WithCreationScript(
-    """
-    .create database testdb persist (
-        @"/kustodata/dbs/testdb",
-        @"/kustodata/dbs/testdb"
-    );
-    """);
+var db = kusto.AddReadWriteDatabase("testdb");
 
 builder.AddProject<Projects.AzureKusto_Worker>("worker")
     .WithReference(db)

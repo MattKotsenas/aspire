@@ -71,10 +71,16 @@ internal sealed class IngestionWorker : BackgroundService
             Format = DataSourceFormat.csv
         };
 
-        await Task.Delay(5000, CancellationToken.None); // Wait for table creation to propagate
-
         using var reader = table.CreateDataReader();
-        await _ingestClient.IngestFromDataReaderAsync(reader, ingestionProps);
+        try
+        {
+            await _ingestClient.IngestFromDataReaderAsync(reader, ingestionProps);
+        }
+        catch (Exception e)
+        {
+            Console.Write(e);
+            throw;
+        }
     }
 
     private async Task ExecuteViaAdminClientAsync()
