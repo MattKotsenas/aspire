@@ -1,6 +1,6 @@
-# Aspire.Template.Tests
+# Aspire.Templates.Tests
 
-The purpose of the `Aspire.Template.Tests` project is to run end-to-end tests against pre-built NuGet packages (nupkgs). These tests validate the ability to create projects from templates just like a user would, and then build, run, and interact with Aspire projects to ensure compatibility with CI pipelines and local development environments.
+The purpose of the `Aspire.Templates.Tests` project is to run end-to-end tests against pre-built NuGet packages (nupkgs). These tests validate the ability to create projects from templates just like a user would, and then build, run, and interact with Aspire projects to ensure compatibility with CI pipelines and local development environments.
 
 For pull-requests in CI the tests are run via GitHub actions defined in `tests-templates.yml`.
 
