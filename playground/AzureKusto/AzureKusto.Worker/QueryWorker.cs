@@ -64,6 +64,10 @@ internal sealed class KustoListener : Kusto.Cloud.Platform.Utils.ITraceListener
     private const string InstrumentationVersion = "1.0.0";
     private const string DbSystem = "kusto";
 
+    // Tag keys for storing operation metadata on the Activity
+    private const string OperationNameTagKey = "kusto.operation_name";
+    private const string ClientRequestIdTagKey = "kusto.client_request_id";
+
     private static readonly ActivitySource s_activitySource = new(InstrumentationName, InstrumentationVersion);
     private static readonly Meter s_meter = new(InstrumentationName, InstrumentationVersion);
 
@@ -77,10 +81,6 @@ internal sealed class KustoListener : Kusto.Cloud.Platform.Utils.ITraceListener
         "db.client.operation.count",
         unit: "{operation}",
         description: "Number of database client operations");
-
-    // Track active operations (HTTP requests, queries, etc.)
-    private readonly Dictionary<string, (Activity Activity, DateTimeOffset StartTime)> _activeOperations = new();
-    private readonly object _lock = new();
 
     public override void Flush()
     {
@@ -116,7 +116,7 @@ internal sealed class KustoListener : Kusto.Cloud.Platform.Utils.ITraceListener
         Console.WriteLine(record.Message);
     }
 
-    private void HandleHttpRequestStart(ReadOnlySpan<char> message)
+    private static void HandleHttpRequestStart(ReadOnlySpan<char> message)
     {
         // Parse: $$HTTPREQUEST[RestClient2]: Verb=POST, Uri=http://localhost:55952/v1/rest/ingest/testdb/TestTable?streamFormat=csv
         var operationName = ExtractValueBetween(message, "$$HTTPREQUEST[", "]:");
@@ -129,24 +129,27 @@ internal sealed class KustoListener : Kusto.Cloud.Platform.Utils.ITraceListener
             return;
         }
 
-        var activityName = $"kusto {verb.ToString().ToLowerInvariant()} {GetOperationFromUri(uri)}";
+        var activityName = $"kusto {GetOperationFromUri(uri)}";
         var activity = s_activitySource.StartActivity(activityName, ActivityKind.Client);
 
         if (activity?.IsAllDataRequested == true)
         {
             activity.SetTag("db.system", DbSystem);
-            
+
+            // Store operation metadata on the Activity for later retrieval
+            activity.SetTag(OperationNameTagKey, operationName.ToString());
+
             if (!verb.IsEmpty)
             {
                 activity.SetTag("http.request.method", verb.ToString());
             }
-            
+
             if (!uri.IsEmpty)
             {
                 var uriString = uri.ToString();
                 activity.SetTag("url.full", uriString);
                 activity.SetTag("server.address", GetServerAddress(uri));
-                
+
                 // Extract database and operation details from URI
                 var operation = GetOperationFromUri(uri);
                 if (!string.IsNullOrEmpty(operation))
@@ -163,21 +166,12 @@ internal sealed class KustoListener : Kusto.Cloud.Platform.Utils.ITraceListener
 
             if (!clientRequestId.IsEmpty)
             {
-                activity.SetTag("kusto.client_request_id", clientRequestId.ToString());
-            }
-        }
-
-        if (activity != null)
-        {
-            var key = clientRequestId.IsEmpty ? operationName.ToString() : clientRequestId.ToString();
-            lock (_lock)
-            {
-                _activeOperations[key] = (activity, DateTimeOffset.UtcNow);
+                activity.SetTag(ClientRequestIdTagKey, clientRequestId.ToString());
             }
         }
     }
 
-    private void HandleHttpResponseReceived(ReadOnlySpan<char> message)
+    private static void HandleHttpResponseReceived(ReadOnlySpan<char> message)
     {
         // Parse: $$HTTPREQUEST_RESPONSEHEADERRECEIVED[RestClient2]: ... StatusCode=OK
         var operationName = ExtractValueBetween(message, "$$HTTPREQUEST_RESPONSEHEADERRECEIVED[", "]:");
@@ -189,55 +183,64 @@ internal sealed class KustoListener : Kusto.Cloud.Platform.Utils.ITraceListener
             return;
         }
 
-        var key = clientRequestId.IsEmpty ? operationName.ToString() : clientRequestId.ToString();
-        Activity? activity = null;
-        DateTimeOffset startTime = default;
-
-        lock (_lock)
+        // Find the matching activity by looking at current activity and its baggage
+        var activity = Activity.Current;
+        
+        // Walk up the activity chain to find matching activity
+        while (activity != null)
         {
-            if (_activeOperations.TryGetValue(key, out var entry))
+            var activityOperationName = activity.GetTagItem(OperationNameTagKey) as string;
+            var activityClientRequestId = activity.GetTagItem(ClientRequestIdTagKey) as string;
+
+            // Match by client request ID if available, otherwise by operation name
+            var matches = !clientRequestId.IsEmpty
+                ? clientRequestId.ToString().Equals(activityClientRequestId, StringComparison.Ordinal)
+                : operationName.ToString().Equals(activityOperationName, StringComparison.Ordinal);
+
+            if (matches)
             {
-                activity = entry.Activity;
-                startTime = entry.StartTime;
-                _activeOperations.Remove(key);
+                CompleteHttpActivity(activity, statusCode);
+                break;
+            }
+
+            activity = activity.Parent;
+        }
+    }
+
+    private static void CompleteHttpActivity(Activity activity, ReadOnlySpan<char> statusCode)
+    {
+        if (!statusCode.IsEmpty)
+        {
+            var statusCodeStr = statusCode.ToString();
+            activity.SetTag("http.response.status_code", statusCodeStr);
+
+            // Set error status for non-2xx responses
+            if (!statusCodeStr.Equals("OK", StringComparison.OrdinalIgnoreCase) &&
+                !statusCodeStr.StartsWith("2"))
+            {
+                activity.SetStatus(ActivityStatusCode.Error);
             }
         }
 
-        if (activity != null)
+        var duration = activity.Duration.TotalSeconds;
+
+        // Record metrics
+        var tags = new TagList
         {
-            if (!statusCode.IsEmpty)
-            {
-                var statusCodeStr = statusCode.ToString();
-                activity.SetTag("http.response.status_code", statusCodeStr);
-                
-                // Set error status for non-2xx responses
-                if (!statusCodeStr.Equals("OK", StringComparison.OrdinalIgnoreCase) && 
-                    !statusCodeStr.StartsWith("2"))
-                {
-                    activity.SetStatus(ActivityStatusCode.Error);
-                }
-            }
+            { "db.system", DbSystem },
+            { "db.operation.name", activity.DisplayName }
+        };
 
-            var duration = (DateTimeOffset.UtcNow - startTime).TotalSeconds;
-            
-            // Record metrics
-            var tags = new TagList
-            {
-                { "db.system", DbSystem },
-                { "db.operation.name", activity.DisplayName }
-            };
+        s_operationDurationHistogram.Record(duration, tags);
+        s_operationCounter.Add(1, tags);
 
-            s_operationDurationHistogram.Record(duration, tags);
-            s_operationCounter.Add(1, tags);
-
-            activity.Stop();
-        }
+        activity.Stop();
     }
 
     private static void HandleCompletedActivity(ReadOnlySpan<char> message)
     {
-        // Parse: MonitoredActivityCompletedSuccessfully: ActivityType=KD.RestClient.ExecuteIngestStreamCommand, 
-        //        Timestamp=2025-10-31T18:43:03.6322170Z, ParentActivityId=87cd062f-fd72-4cf4-80bf-b21351eb5318, 
+        // Parse: MonitoredActivityCompletedSuccessfully: ActivityType=KD.RestClient.ExecuteIngestStreamCommand,
+        //        Timestamp=2025-10-31T18:43:03.6322170Z, ParentActivityId=87cd062f-fd72-4cf4-80bf-b21351eb5318,
         //        Duration=31183.9028 [ms], HowEnded=Success
 
         var activityType = ExtractKeyValue(message, "ActivityType=", ',');
@@ -293,7 +296,7 @@ internal sealed class KustoListener : Kusto.Cloud.Platform.Utils.ITraceListener
 
         startIndex += start.Length;
         var remaining = source.Slice(startIndex);
-        
+
         var endIndex = remaining.IndexOf(end);
         if (endIndex < 0)
         {
@@ -332,7 +335,7 @@ internal sealed class KustoListener : Kusto.Cloud.Platform.Utils.ITraceListener
     {
         // Extract operation from URI like: http://localhost:55952/v1/rest/ingest/testdb/TestTable
         // Should return "ingest"
-        
+
         var pathStart = uri.IndexOf("://");
         if (pathStart >= 0)
         {
@@ -341,19 +344,19 @@ internal sealed class KustoListener : Kusto.Cloud.Platform.Utils.ITraceListener
             if (pathIndex >= 0)
             {
                 var path = afterScheme.Slice(pathIndex + 1);
-                
+
                 // Skip version (v1)
                 var nextSlash = path.IndexOf('/');
                 if (nextSlash >= 0)
                 {
                     path = path.Slice(nextSlash + 1);
-                    
+
                     // Skip rest
                     nextSlash = path.IndexOf('/');
                     if (nextSlash >= 0)
                     {
                         path = path.Slice(nextSlash + 1);
-                        
+
                         // Get operation (ingest, query, etc.)
                         nextSlash = path.IndexOf('/');
                         if (nextSlash >= 0)
@@ -372,7 +375,7 @@ internal sealed class KustoListener : Kusto.Cloud.Platform.Utils.ITraceListener
     {
         // Extract database from URI like: http://localhost:55952/v1/rest/ingest/testdb/TestTable
         // Should return "testdb"
-        
+
         var pathStart = uri.IndexOf("://");
         if (pathStart >= 0)
         {
@@ -381,7 +384,7 @@ internal sealed class KustoListener : Kusto.Cloud.Platform.Utils.ITraceListener
             if (pathIndex >= 0)
             {
                 var path = afterScheme.Slice(pathIndex + 1);
-                
+
                 // Skip version and rest and operation
                 for (int i = 0; i < 3; i++)
                 {
@@ -395,20 +398,20 @@ internal sealed class KustoListener : Kusto.Cloud.Platform.Utils.ITraceListener
                         return string.Empty;
                     }
                 }
-                
+
                 // Get database name
                 var dbEnd = path.IndexOf('/');
                 if (dbEnd >= 0)
                 {
                     return path.Slice(0, dbEnd).ToString();
                 }
-                
+
                 var queryIndex = path.IndexOf('?');
                 if (queryIndex >= 0)
                 {
                     return path.Slice(0, queryIndex).ToString();
                 }
-                
+
                 return path.ToString();
             }
         }
@@ -426,7 +429,7 @@ internal sealed class KustoListener : Kusto.Cloud.Platform.Utils.ITraceListener
 
         var hostStart = schemeEnd + 3;
         var remaining = uri.Slice(hostStart);
-        
+
         var pathStart = remaining.IndexOf('/');
         var host = pathStart >= 0 ? remaining.Slice(0, pathStart) : remaining;
 
