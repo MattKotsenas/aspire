@@ -9,6 +9,11 @@ using Polly;
 var builder = Host.CreateApplicationBuilder(args);
 builder.AddServiceDefaults();
 
+// Configure OpenTelemetry for Kusto
+builder.Services.AddOpenTelemetry()
+    .WithTracing(tracing => tracing.AddSource("Kusto.Client"))
+    .WithMetrics(metrics => metrics.AddMeter("Kusto.Client"));
+
 var connectionString = builder.Configuration.GetConnectionString("testdb");
 
 var connectionStringBuilder = new KustoConnectionStringBuilder(connectionString);
@@ -47,5 +52,8 @@ builder.Services.AddHostedService<QueryWorker>();
 builder.Services.AddHostedService<IngestionWorker>();
 
 var app = builder.Build();
+
+// Register the custom Kusto trace listener to bridge to OpenTelemetry
+Kusto.Cloud.Platform.Utils.TraceSourceManager.AddTraceListener(new KustoListener(), startupDone: true);
 
 app.Run();

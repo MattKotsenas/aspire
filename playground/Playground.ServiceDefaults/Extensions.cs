@@ -46,6 +46,7 @@ public static class Extensions
             .WithMetrics(metrics =>
             {
                 metrics.AddAspNetCoreInstrumentation()
+                    .AddMeter("Kusto.Client")
                     .AddHttpClientInstrumentation()
                     .AddRuntimeInstrumentation()
                     .SetExemplarFilter(ExemplarFilterType.TraceBased);
@@ -53,6 +54,8 @@ public static class Extensions
             .WithTracing(tracing =>
             {
                 tracing.AddAspNetCoreInstrumentation()
+                    .AddSource("AzureKusto.Worker.QueryWorker")
+                    .AddSource("Kusto.Client")
                     // Uncomment the following line to enable gRPC instrumentation (requires the OpenTelemetry.Instrumentation.GrpcNetClient package)
                     //.AddGrpcClientInstrumentation()
                     .AddHttpClientInstrumentation();
