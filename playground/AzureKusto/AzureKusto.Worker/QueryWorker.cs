@@ -4,6 +4,7 @@
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using Kusto.Cloud.Platform.Data;
+using KustoUtils = Kusto.Cloud.Platform.Utils;
 using Kusto.Data.Common;
 using Microsoft.Extensions.Options;
 using Polly;
@@ -58,14 +59,40 @@ internal sealed class QueryWorker : BackgroundService
     }
 }
 
-internal sealed class KustoListener : Kusto.Cloud.Platform.Utils.ITraceListener
+internal static class SemanticConventions
+{
+    public const string AttributeDbOperationName = "db.operation.name";
+    public const string AttributeDbSystemName = "db.system.name";
+    public const string AttributeHttpResponseStatusCode = "http.response.status_code";
+    public const string AttributeDbNamespace = "db.namespace";
+    public const string AttributeUrlFull = "url.full";
+    public const string AttributeServerAddress = "server.address";
+}
+
+internal static class TraceRecordExtensions
+{
+    public static bool IsRequestStart(this KustoUtils.TraceRecord record)
+    {
+        return record.Message.StartsWith("$$HTTPREQUEST[", StringComparison.Ordinal);
+    }
+
+    public static bool IsResponseStart(this KustoUtils.TraceRecord record)
+    {
+        return record.Message.StartsWith("$$HTTPREQUEST_RESPONSEHEADERRECEIVED[", StringComparison.Ordinal);
+    }
+
+    public static bool IsExcention(this KustoUtils.TraceRecord record)
+    {
+        return record.TraceSourceName == "KD.Exceptions";
+    }
+}
+
+internal sealed class KustoListener : KustoUtils.ITraceListener
 {
     private const string InstrumentationName = "Kusto.Client";
     private const string InstrumentationVersion = "1.0.0";
     private const string DbSystem = "kusto";
 
-    // Tag keys for storing operation metadata on the Activity
-    private const string OperationNameTagKey = "kusto.operation_name";
     private const string ClientRequestIdTagKey = "kusto.client_request_id";
 
     private static readonly ActivitySource s_activitySource = new(InstrumentationName, InstrumentationVersion);
@@ -87,75 +114,63 @@ internal sealed class KustoListener : Kusto.Cloud.Platform.Utils.ITraceListener
         // No buffering, nothing to flush
     }
 
-    public override void Write(Kusto.Cloud.Platform.Utils.TraceRecord record)
+    public override void Write(KustoUtils.TraceRecord record)
     {
-        if (record?.Message == null)
+        if (record?.Message is null)
         {
             return;
         }
 
-        var message = record.Message.AsSpan();
-
-        // Handle HTTP request start
-        if (message.StartsWith("$$HTTPREQUEST["))
+        if (record.IsRequestStart())
         {
-            HandleHttpRequestStart(message);
+            HandleHttpRequestStart(record);
         }
-        // Handle HTTP response received
-        else if (message.StartsWith("$$HTTPREQUEST_RESPONSEHEADERRECEIVED["))
+        else if (record.IsResponseStart())
         {
-            HandleHttpResponseReceived(message);
+            HandleHttpResponseReceived(record);
         }
-
-        // For debugging, write to console
-        Console.WriteLine(record.Message);
+        else if (record.IsExcention())
+        {
+            HandleException(record);
+        }
     }
 
-    private static void HandleHttpRequestStart(ReadOnlySpan<char> message)
+    private static void HandleException(KustoUtils.TraceRecord record)
+    {
+        var activity = Activity.Current;
+
+        activity?.SetStatus(ActivityStatusCode.Error, record.Message);
+    }
+
+    private static void HandleHttpRequestStart(KustoUtils.TraceRecord record)
     {
         // Parse: $$HTTPREQUEST[RestClient2]: Verb=POST, Uri=http://localhost:55952/v1/rest/ingest/testdb/TestTable?streamFormat=csv
-        var operationName = ExtractValueBetween(message, "$$HTTPREQUEST[", "]:");
-        var verb = ExtractKeyValue(message, "Verb=", ',');
-        var uri = ExtractKeyValue(message, "Uri=", ',');
-        var clientRequestId = ExtractKeyValue(message, "ClientRequestId=", default);
+        var message = record.Message.AsSpan();
 
-        if (operationName.IsEmpty)
-        {
-            return;
-        }
+        var operationName = record.Activity.ActivityType;
+        var uri = ExtractValueBetween(message, "Uri=", ",");
+        var clientRequestId = ExtractValueBetween(message, "ClientRequestId=", Environment.NewLine);
 
-        var activityName = $"kusto {GetOperationFromUri(uri)}";
+        var activityName = $"{operationName}";
         var activity = s_activitySource.StartActivity(activityName, ActivityKind.Client);
 
-        if (activity?.IsAllDataRequested == true)
+        if (activity?.IsAllDataRequested is true)
         {
-            activity.SetTag("db.system", DbSystem);
+            activity.SetTag(SemanticConventions.AttributeDbSystemName, DbSystem);
 
             // Store operation metadata on the Activity for later retrieval
-            activity.SetTag(OperationNameTagKey, operationName.ToString());
-
-            if (!verb.IsEmpty)
-            {
-                activity.SetTag("http.request.method", verb.ToString());
-            }
+            activity.SetTag(SemanticConventions.AttributeDbOperationName, operationName);
 
             if (!uri.IsEmpty)
             {
                 var uriString = uri.ToString();
-                activity.SetTag("url.full", uriString);
-                activity.SetTag("server.address", GetServerAddress(uri));
-
-                // Extract database and operation details from URI
-                var operation = GetOperationFromUri(uri);
-                if (!string.IsNullOrEmpty(operation))
-                {
-                    activity.SetTag("db.operation.name", operation);
-                }
+                activity.SetTag(SemanticConventions.AttributeUrlFull, uriString);
+                activity.SetTag(SemanticConventions.AttributeServerAddress, GetServerAddress(uri));
 
                 var database = GetDatabaseFromUri(uri);
                 if (!string.IsNullOrEmpty(database))
                 {
-                    activity.SetTag("db.namespace", database);
+                    activity.SetTag(SemanticConventions.AttributeDbNamespace, database);
                 }
             }
 
@@ -166,12 +181,14 @@ internal sealed class KustoListener : Kusto.Cloud.Platform.Utils.ITraceListener
         }
     }
 
-    private static void HandleHttpResponseReceived(ReadOnlySpan<char> message)
+    private static void HandleHttpResponseReceived(KustoUtils.TraceRecord record)
     {
         // Parse: $$HTTPREQUEST_RESPONSEHEADERRECEIVED[RestClient2]: ... StatusCode=OK
+        var message = record.Message.AsSpan();
+
         var operationName = ExtractValueBetween(message, "$$HTTPREQUEST_RESPONSEHEADERRECEIVED[", "]:");
-        var statusCode = ExtractKeyValue(message, "StatusCode=", '\r');
-        var clientRequestId = ExtractKeyValue(message, "x-ms-client-request-id=", '\r');
+        var statusCode = ExtractValueBetween(message, "StatusCode=", Environment.NewLine);
+        var clientRequestId = ExtractValueBetween(message, "x-ms-client-request-id=", Environment.NewLine);
 
         if (operationName.IsEmpty)
         {
@@ -180,11 +197,11 @@ internal sealed class KustoListener : Kusto.Cloud.Platform.Utils.ITraceListener
 
         // Find the matching activity by looking at current activity and its baggage
         var activity = Activity.Current;
-        
+
         // Walk up the activity chain to find matching activity
         while (activity != null)
         {
-            var activityOperationName = activity.GetTagItem(OperationNameTagKey) as string;
+            var activityOperationName = activity.GetTagItem(SemanticConventions.AttributeDbOperationName) as string;
             var activityClientRequestId = activity.GetTagItem(ClientRequestIdTagKey) as string;
 
             // Match by client request ID if available, otherwise by operation name
@@ -207,7 +224,7 @@ internal sealed class KustoListener : Kusto.Cloud.Platform.Utils.ITraceListener
         if (!statusCode.IsEmpty)
         {
             var statusCodeStr = statusCode.ToString();
-            activity.SetTag("http.response.status_code", statusCodeStr);
+            activity.SetTag(SemanticConventions.AttributeHttpResponseStatusCode, statusCodeStr);
 
             // Set error status for non-2xx responses
             if (!statusCodeStr.Equals("OK", StringComparison.OrdinalIgnoreCase) &&
@@ -222,8 +239,8 @@ internal sealed class KustoListener : Kusto.Cloud.Platform.Utils.ITraceListener
         // Record metrics
         var tags = new TagList
         {
-            { "db.system", DbSystem },
-            { "db.operation.name", activity.DisplayName }
+            { SemanticConventions.AttributeDbSystemName, DbSystem },
+            { SemanticConventions.AttributeDbOperationName, activity.DisplayName }
         };
 
         s_operationDurationHistogram.Record(duration, tags);
@@ -246,75 +263,10 @@ internal sealed class KustoListener : Kusto.Cloud.Platform.Utils.ITraceListener
         var endIndex = remaining.IndexOf(end);
         if (endIndex < 0)
         {
-            return ReadOnlySpan<char>.Empty;
+            endIndex = remaining.Length;
         }
 
         return remaining.Slice(0, endIndex);
-    }
-
-    private static ReadOnlySpan<char> ExtractKeyValue(ReadOnlySpan<char> source, string key, char delimiter)
-    {
-        var keyIndex = source.IndexOf(key);
-        if (keyIndex < 0)
-        {
-            return ReadOnlySpan<char>.Empty;
-        }
-
-        var valueStart = keyIndex + key.Length;
-        var remaining = source.Slice(valueStart);
-
-        if (delimiter == default)
-        {
-            return remaining.Trim();
-        }
-
-        var delimiterIndex = remaining.IndexOf(delimiter);
-        if (delimiterIndex < 0)
-        {
-            return remaining.Trim();
-        }
-
-        return remaining.Slice(0, delimiterIndex).Trim();
-    }
-
-    private static string GetOperationFromUri(ReadOnlySpan<char> uri)
-    {
-        // Extract operation from URI like: http://localhost:55952/v1/rest/ingest/testdb/TestTable
-        // Should return "ingest"
-
-        var pathStart = uri.IndexOf("://");
-        if (pathStart >= 0)
-        {
-            var afterScheme = uri.Slice(pathStart + 3);
-            var pathIndex = afterScheme.IndexOf('/');
-            if (pathIndex >= 0)
-            {
-                var path = afterScheme.Slice(pathIndex + 1);
-
-                // Skip version (v1)
-                var nextSlash = path.IndexOf('/');
-                if (nextSlash >= 0)
-                {
-                    path = path.Slice(nextSlash + 1);
-
-                    // Skip rest
-                    nextSlash = path.IndexOf('/');
-                    if (nextSlash >= 0)
-                    {
-                        path = path.Slice(nextSlash + 1);
-
-                        // Get operation (ingest, query, etc.)
-                        nextSlash = path.IndexOf('/');
-                        if (nextSlash >= 0)
-                        {
-                            return path.Slice(0, nextSlash).ToString();
-                        }
-                    }
-                }
-            }
-        }
-
-        return string.Empty;
     }
 
     private static string GetDatabaseFromUri(ReadOnlySpan<char> uri)
@@ -378,13 +330,6 @@ internal sealed class KustoListener : Kusto.Cloud.Platform.Utils.ITraceListener
 
         var pathStart = remaining.IndexOf('/');
         var host = pathStart >= 0 ? remaining.Slice(0, pathStart) : remaining;
-
-        // Remove port if present
-        var portIndex = host.IndexOf(':');
-        if (portIndex >= 0)
-        {
-            host = host.Slice(0, portIndex);
-        }
 
         return host.ToString();
     }
