@@ -50,6 +50,7 @@ internal sealed class QueryWorker : BackgroundService
             {
                 crp.ClientRequestId = activity.TraceId.ToHexString();
             }
+            crp.SetOption(ClientRequestProperties.OptionRequestDescription, "My sample description");
 
             return await _queryClient.ExecuteQueryAsync(_queryClient.DefaultDatabaseName, _workerOptions.CurrentValue.TableName, crp, ct);
         }, stoppingToken);
@@ -67,6 +68,7 @@ internal static class SemanticConventions
     public const string AttributeDbNamespace = "db.namespace";
     public const string AttributeUrlFull = "url.full";
     public const string AttributeServerAddress = "server.address";
+    public const string AttributeDbClientOperationDuration = "db.client.operation.duration";
 }
 
 internal static class TraceRecordExtensions
@@ -100,13 +102,13 @@ internal sealed class KustoListener : KustoUtils.ITraceListener
 
     // Metrics following OpenTelemetry database semantic conventions
     private static readonly Histogram<double> s_operationDurationHistogram = s_meter.CreateHistogram<double>(
-        "db.client.operation.duration",
+        SemanticConventions.AttributeDbClientOperationDuration,
         unit: "s",
+        advice: new InstrumentAdvice<double>() { HistogramBucketBoundaries = [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10] },
         description: "Duration of database client operations");
 
     private static readonly Counter<long> s_operationCounter = s_meter.CreateCounter<long>(
         "db.client.operation.count",
-        unit: "{operation}",
         description: "Number of database client operations");
 
     public override void Flush()
@@ -145,21 +147,18 @@ internal sealed class KustoListener : KustoUtils.ITraceListener
     private static void HandleHttpRequestStart(KustoUtils.TraceRecord record)
     {
         // Parse: $$HTTPREQUEST[RestClient2]: Verb=POST, Uri=http://localhost:55952/v1/rest/ingest/testdb/TestTable?streamFormat=csv
-        var message = record.Message.AsSpan();
-
         var operationName = record.Activity.ActivityType;
-        var uri = ExtractValueBetween(message, "Uri=", ",");
-        var clientRequestId = ExtractValueBetween(message, "ClientRequestId=", Environment.NewLine);
 
-        var activityName = $"{operationName}";
-        var activity = s_activitySource.StartActivity(activityName, ActivityKind.Client);
+        var activity = s_activitySource.StartActivity(operationName, ActivityKind.Client);
 
         if (activity?.IsAllDataRequested is true)
         {
             activity.SetTag(SemanticConventions.AttributeDbSystemName, DbSystem);
-
-            // Store operation metadata on the Activity for later retrieval
+            activity.SetTag(ClientRequestIdTagKey, record.Activity.ClientRequestId.ToString());
             activity.SetTag(SemanticConventions.AttributeDbOperationName, operationName);
+
+            var message = record.Message.AsSpan();
+            var uri = ExtractValueBetween(message, "Uri=", ",");
 
             if (!uri.IsEmpty)
             {
@@ -174,48 +173,27 @@ internal sealed class KustoListener : KustoUtils.ITraceListener
                 }
             }
 
-            if (!clientRequestId.IsEmpty)
-            {
-                activity.SetTag(ClientRequestIdTagKey, clientRequestId.ToString());
-            }
         }
     }
 
     private static void HandleHttpResponseReceived(KustoUtils.TraceRecord record)
     {
         // Parse: $$HTTPREQUEST_RESPONSEHEADERRECEIVED[RestClient2]: ... StatusCode=OK
-        var message = record.Message.AsSpan();
+        var activity = Activity.Current;
 
-        var operationName = ExtractValueBetween(message, "$$HTTPREQUEST_RESPONSEHEADERRECEIVED[", "]:");
-        var statusCode = ExtractValueBetween(message, "StatusCode=", Environment.NewLine);
-        var clientRequestId = ExtractValueBetween(message, "x-ms-client-request-id=", Environment.NewLine);
-
-        if (operationName.IsEmpty)
+        if (activity is null)
         {
             return;
         }
 
-        // Find the matching activity by looking at current activity and its baggage
-        var activity = Activity.Current;
+        var clientRequestId = record.Activity.ClientRequestId;
+        var activityClientRequestId = activity.GetTagItem(ClientRequestIdTagKey) as string;
 
-        // Walk up the activity chain to find matching activity
-        while (activity != null)
+        if (clientRequestId.Equals(activityClientRequestId, StringComparison.Ordinal))
         {
-            var activityOperationName = activity.GetTagItem(SemanticConventions.AttributeDbOperationName) as string;
-            var activityClientRequestId = activity.GetTagItem(ClientRequestIdTagKey) as string;
-
-            // Match by client request ID if available, otherwise by operation name
-            var matches = !clientRequestId.IsEmpty
-                ? clientRequestId.ToString().Equals(activityClientRequestId, StringComparison.Ordinal)
-                : operationName.ToString().Equals(activityOperationName, StringComparison.Ordinal);
-
-            if (matches)
-            {
-                CompleteHttpActivity(activity, statusCode);
-                break;
-            }
-
-            activity = activity.Parent;
+            var message = record.Message.AsSpan();
+            var statusCode = ExtractValueBetween(message, "StatusCode=", Environment.NewLine);
+            CompleteHttpActivity(activity, statusCode);
         }
     }
 
@@ -228,7 +206,7 @@ internal sealed class KustoListener : KustoUtils.ITraceListener
 
             // Set error status for non-2xx responses
             if (!statusCodeStr.Equals("OK", StringComparison.OrdinalIgnoreCase) &&
-                !statusCodeStr.StartsWith("2"))
+                !statusCodeStr.StartsWith('2'))
             {
                 activity.SetStatus(ActivityStatusCode.Error);
             }
@@ -269,6 +247,7 @@ internal sealed class KustoListener : KustoUtils.ITraceListener
         return remaining.Slice(0, endIndex);
     }
 
+    // TODO: This doesn't work for queries, as they aren't in the Uri
     private static string GetDatabaseFromUri(ReadOnlySpan<char> uri)
     {
         // Extract database from URI like: http://localhost:55952/v1/rest/ingest/testdb/TestTable
