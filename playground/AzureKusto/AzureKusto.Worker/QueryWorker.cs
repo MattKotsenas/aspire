@@ -106,11 +106,6 @@ internal sealed class KustoListener : Kusto.Cloud.Platform.Utils.ITraceListener
         {
             HandleHttpResponseReceived(message);
         }
-        // Handle completed activities
-        else if (message.IndexOf("MonitoredActivityCompletedSuccessfully:") >= 0)
-        {
-            HandleCompletedActivity(message);
-        }
 
         // For debugging, write to console
         Console.WriteLine(record.Message);
@@ -235,55 +230,6 @@ internal sealed class KustoListener : Kusto.Cloud.Platform.Utils.ITraceListener
         s_operationCounter.Add(1, tags);
 
         activity.Stop();
-    }
-
-    private static void HandleCompletedActivity(ReadOnlySpan<char> message)
-    {
-        // Parse: MonitoredActivityCompletedSuccessfully: ActivityType=KD.RestClient.ExecuteIngestStreamCommand,
-        //        Timestamp=2025-10-31T18:43:03.6322170Z, ParentActivityId=87cd062f-fd72-4cf4-80bf-b21351eb5318,
-        //        Duration=31183.9028 [ms], HowEnded=Success
-
-        var activityType = ExtractKeyValue(message, "ActivityType=", ',');
-        var durationStr = ExtractKeyValue(message, "Duration=", ' ');
-        var howEnded = ExtractKeyValue(message, "HowEnded=", default);
-
-        if (activityType.IsEmpty)
-        {
-            return;
-        }
-
-        // Parse duration (format: "31183.9028 [ms]")
-        double durationMs = 0;
-        if (!durationStr.IsEmpty)
-        {
-            var durationValue = durationStr;
-            var bracketIndex = durationValue.IndexOf('[');
-            if (bracketIndex > 0)
-            {
-                durationValue = durationValue.Slice(0, bracketIndex).Trim();
-            }
-
-            double.TryParse(durationValue, out durationMs);
-        }
-
-        var durationSeconds = durationMs / 1000.0;
-
-        // Record metrics for completed activity
-        var operationName = GetSimpleOperationName(activityType);
-        var tags = new TagList
-        {
-            { "db.system", DbSystem },
-            { "db.operation.name", operationName },
-            { "kusto.activity_type", activityType.ToString() }
-        };
-
-        if (!howEnded.IsEmpty)
-        {
-            tags.Add("kusto.how_ended", howEnded.ToString());
-        }
-
-        s_operationDurationHistogram.Record(durationSeconds, tags);
-        s_operationCounter.Add(1, tags);
     }
 
     private static ReadOnlySpan<char> ExtractValueBetween(ReadOnlySpan<char> source, string start, string end)
@@ -441,17 +387,5 @@ internal sealed class KustoListener : Kusto.Cloud.Platform.Utils.ITraceListener
         }
 
         return host.ToString();
-    }
-
-    private static string GetSimpleOperationName(ReadOnlySpan<char> activityType)
-    {
-        // Convert "KD.RestClient.ExecuteIngestStreamCommand" to "ExecuteIngestStreamCommand"
-        var lastDot = activityType.LastIndexOf('.');
-        if (lastDot >= 0 && lastDot < activityType.Length - 1)
-        {
-            return activityType.Slice(lastDot + 1).ToString();
-        }
-
-        return activityType.ToString();
     }
 }
