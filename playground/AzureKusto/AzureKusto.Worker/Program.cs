@@ -54,6 +54,7 @@ builder.Services.AddHostedService<IngestionWorker>();
 var app = builder.Build();
 
 // Register the custom Kusto trace listener to bridge to OpenTelemetry
+Environment.SetEnvironmentVariable("KUSTO_DATA_TRACE_REQUEST_BODY", "1");
 Kusto.Cloud.Platform.Utils.TraceSourceManager.AddTraceListener(new KustoListener(), startupDone: true);
 
 app.Run();

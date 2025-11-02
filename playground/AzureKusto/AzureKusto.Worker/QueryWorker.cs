@@ -69,6 +69,8 @@ internal static class SemanticConventions
     public const string AttributeUrlFull = "url.full";
     public const string AttributeServerAddress = "server.address";
     public const string AttributeDbClientOperationDuration = "db.client.operation.duration";
+    public const string AttributeDbQuerySummary = "db.query.summary";
+    public const string AttributeDbQueryText = "db.query.text";
 }
 
 internal static class TraceRecordExtensions
@@ -110,6 +112,8 @@ internal sealed class KustoListener : KustoUtils.ITraceListener
     private static readonly Counter<long> s_operationCounter = s_meter.CreateCounter<long>(
         "db.client.operation.count",
         description: "Number of database client operations");
+
+    public override bool IsThreadSafe => true;
 
     public override void Flush()
     {
@@ -158,8 +162,8 @@ internal sealed class KustoListener : KustoUtils.ITraceListener
             activity.SetTag(SemanticConventions.AttributeDbOperationName, operationName);
 
             var message = record.Message.AsSpan();
-            var uri = ExtractValueBetween(message, "Uri=", ",");
 
+            var uri = ExtractValueBetween(message, "Uri=", ",");
             if (!uri.IsEmpty)
             {
                 var uriString = uri.ToString();
@@ -173,6 +177,13 @@ internal sealed class KustoListener : KustoUtils.ITraceListener
                 }
             }
 
+            // TODO: Consider making text optional
+            // TODO: Consider adding summary
+            var text = ExtractValueBetween(message, "text=", Environment.NewLine);
+            if (!text.IsEmpty)
+            {
+                activity.SetTag(SemanticConventions.AttributeDbQueryText, text.ToString());
+            }
         }
     }
 
