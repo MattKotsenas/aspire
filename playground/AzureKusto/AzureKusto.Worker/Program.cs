@@ -4,6 +4,8 @@ using Kusto.Cloud.Platform.Utils;
 using Kusto.Data;
 using Kusto.Data.Net.Client;
 using Kusto.Ingest;
+using OpenTelemetry.Trace;
+using OpenTelemetry.Metrics;
 using Polly;
 
 var builder = Host.CreateApplicationBuilder(args);
@@ -11,8 +13,22 @@ builder.AddServiceDefaults();
 
 // Configure OpenTelemetry for Kusto
 builder.Services.AddOpenTelemetry()
-    .WithTracing(tracing => tracing.AddSource("Kusto.Client"))
-    .WithMetrics(metrics => metrics.AddMeter("Kusto.Client"));
+    .WithTracing(tracing =>
+    {
+        tracing.AddKustoInstrumentation(o =>
+        {
+            o.Enrich = (activity, record) =>
+            {
+                // Example of adding custom tags to the Activity based on Kusto trace records
+                Console.WriteLine($"Kusto Trace Record: {record.Message}");
+            };
+            o.RecordQueryText = true;
+        });
+    })
+    .WithMetrics(metrics =>
+    {
+        metrics.AddKustoInstrumentation();
+    });
 
 var connectionString = builder.Configuration.GetConnectionString("testdb");
 
@@ -42,7 +58,7 @@ builder.Services.AddResiliencePipeline("kusto-resilience", builder =>
         MaxRetryAttempts = 10,
         Delay = TimeSpan.FromMilliseconds(100),
         BackoffType = DelayBackoffType.Exponential,
-        ShouldHandle = new PredicateBuilder().Handle<Exception>(e => e is ICloudPlatformException cpe && ! cpe.IsPermanent),
+        ShouldHandle = new PredicateBuilder().Handle<Exception>(e => e is ICloudPlatformException cpe && !cpe.IsPermanent),
     })
 );
 
@@ -52,9 +68,5 @@ builder.Services.AddHostedService<QueryWorker>();
 builder.Services.AddHostedService<IngestionWorker>();
 
 var app = builder.Build();
-
-// Register the custom Kusto trace listener to bridge to OpenTelemetry
-Environment.SetEnvironmentVariable("KUSTO_DATA_TRACE_REQUEST_BODY", "1");
-Kusto.Cloud.Platform.Utils.TraceSourceManager.AddTraceListener(new KustoListener(), startupDone: true);
 
 app.Run();

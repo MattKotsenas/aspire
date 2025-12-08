@@ -176,8 +176,8 @@
     <Project Path="playground/deployers/Deployers.AppHost/Deployers.AppHost.csproj" />
   </Folder>
   <Folder Name="/playground/DevTunnels/">
-    <Project Path="playground/DevTunnels/DevTunnels.AppHost/DevTunnels.AppHost.csproj" />
     <Project Path="playground/DevTunnels/DevTunnels.ApiService/DevTunnels.ApiService.csproj" />
+    <Project Path="playground/DevTunnels/DevTunnels.AppHost/DevTunnels.AppHost.csproj" />
     <Project Path="playground/DevTunnels/DevTunnels.WebFrontEnd/DevTunnels.WebFrontEnd.csproj" />
   </Folder>
   <Folder Name="/playground/dockerfile/">
@@ -234,8 +234,8 @@
   </Folder>
   <Folder Name="/playground/node/">
     <Project Path="playground/AspireWithNode/AspireWithNode.AppHost/AspireWithNode.AppHost.csproj" />
-    <Project Path="playground/AspireWithNode/AspireWithNode.ServiceDefaults/AspireWithNode.ServiceDefaults.csproj" />
     <Project Path="playground/AspireWithNode/AspireWithNode.AspNetCoreApi/AspireWithNode.AspNetCoreApi.csproj" />
+    <Project Path="playground/AspireWithNode/AspireWithNode.ServiceDefaults/AspireWithNode.ServiceDefaults.csproj" />
   </Folder>
   <Folder Name="/playground/OpenAIEndToEnd/">
     <Project Path="playground/OpenAIEndToEnd/OpenAIEndToEnd.AppHost/OpenAIEndToEnd.AppHost.csproj" />
@@ -468,4 +468,5 @@
   <Folder Name="/Workload/">
     <Project Path="src/Aspire.AppHost.Sdk/Aspire.AppHost.Sdk.csproj" />
   </Folder>
+  <Project Path="../opentelemetry-dotnet-contrib/src/OpenTelemetry.Instrumentation.Kusto/OpenTelemetry.Instrumentation.Kusto.csproj" />
 </Solution>

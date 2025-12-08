@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk.Worker">
+﻿<Project Sdk="Microsoft.NET.Sdk.Worker">
 
   <PropertyGroup>
     <TargetFramework>$(DefaultTargetFramework)</TargetFramework>
@@ -12,6 +12,7 @@
     <PackageReference Include="Microsoft.Azure.Kusto.Ingest" />
     <PackageReference Include="Polly.Extensions" />
     <PackageReference Include="System.Text.Json" VersionOverride="9.0.7" /><!-- Microsoft.Azure.Kusto.Ingest requires STJ 9 -->
+    <ProjectReference Include="..\..\..\..\opentelemetry-dotnet-contrib\src\OpenTelemetry.Instrumentation.Kusto\OpenTelemetry.Instrumentation.Kusto.csproj" />
     <ProjectReference Include="..\..\Playground.ServiceDefaults\Playground.ServiceDefaults.csproj" />
   </ItemGroup>
 
