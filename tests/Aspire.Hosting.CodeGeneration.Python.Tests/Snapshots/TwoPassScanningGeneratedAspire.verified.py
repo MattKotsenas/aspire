@@ -7524,6 +7524,10 @@ class AbstractResource(abc.ABC):
         """Configures custom base images for generated Dockerfiles."""
 
     @abc.abstractmethod
+    def with_pipeline_output_dir(self, path: str) -> typing.Self:
+        """Configures this resource's output directory when using the default pipeline output service."""
+
+    @abc.abstractmethod
     def with_required_command(self, command: str, *, help_link: str | None = None) -> typing.Self:
         """Declares that a resource requires a specific command/executable to be available on the local machine PATH before it can start."""
 
@@ -8013,6 +8017,7 @@ class _BaseResourceKwargs(typing.TypedDict, total=False):
 
     container_registry: AbstractResource
     dockerfile_base_image: DockerfileBaseImageParameters | typing.Literal[True]
+    pipeline_output_dir: str
     required_command: str | tuple[str, str]
     required_command_validation: tuple[str, typing.Callable[[RequiredCommandValidationContext], RequiredCommandValidationResult]] | RequiredCommandValidationParameters
     session_lifetime: typing.Literal[True]
@@ -8096,6 +8101,17 @@ class _BaseResource(AbstractResource):
             rpc_args['runtimeImage'] = runtime_image
         result = self._client.invoke_capability(
             'Aspire.Hosting/withDockerfileBaseImage',
+            rpc_args,
+        )
+        self._handle = self._wrap_builder(result)
+        return self
+
+    def with_pipeline_output_dir(self, path: str) -> typing.Self:
+        """Configures this resource's output directory when using the default pipeline output service."""
+        rpc_args: dict[str, typing.Any] = {'builder': self._handle}
+        rpc_args['path'] = path
+        result = self._client.invoke_capability(
+            'Aspire.Hosting/withPipelineOutputDirectory',
             rpc_args,
         )
         self._handle = self._wrap_builder(result)
@@ -8758,6 +8774,13 @@ class _BaseResource(AbstractResource):
                 handle = self._wrap_builder(client.invoke_capability('Aspire.Hosting/withDockerfileBaseImage', rpc_args))
             else:
                 raise TypeError("Invalid type for option 'dockerfile_base_image'. Expected: DockerfileBaseImageParameters or Literal[True]")
+        if (_pipeline_output_dir := kwargs.pop("pipeline_output_dir", None)) is not None:
+            if _validate_type(_pipeline_output_dir, str):
+                rpc_args: dict[str, typing.Any] = {"builder": handle}
+                rpc_args["path"] = typing.cast(str, _pipeline_output_dir)
+                handle = self._wrap_builder(client.invoke_capability('Aspire.Hosting/withPipelineOutputDirectory', rpc_args))
+            else:
+                raise TypeError("Invalid type for option 'pipeline_output_dir'. Expected: str")
         if (_required_command := kwargs.pop("required_command", None)) is not None:
             if _validate_type(_required_command, str):
                 rpc_args: dict[str, typing.Any] = {"builder": handle}

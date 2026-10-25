@@ -12994,6 +12994,16 @@ export interface ContainerRegistryResource {
      */
     withDockerfileBaseImage(options?: WithDockerfileBaseImageOptions): ContainerRegistryResourcePromise;
     /**
+     * Configures this resource's output directory when using the default pipeline output service.
+     *
+     * A later call replaces the previous override. Publishers must retrieve this directory through the resource-specific output lookup.
+     * This setting does not change temporary directories or redirect any file writes.
+     * Custom pipeline output services determine their own directory mappings.
+     * @param path A directory path relative to the global pipeline output directory, or a fully qualified directory path.
+     * @returns The resource builder.
+     */
+    withPipelineOutputDirectory(path: string): ContainerRegistryResourcePromise;
+    /**
      * Declares that a resource requires a specific command/executable to be available on the local machine PATH before it can start.
      *
      * The command is considered valid if either:
@@ -13332,6 +13342,16 @@ export interface ContainerRegistryResourcePromise extends PromiseLike<ContainerR
      * @returns The resource builder.
      */
     withDockerfileBaseImage(options?: WithDockerfileBaseImageOptions): ContainerRegistryResourcePromise;
+    /**
+     * Configures this resource's output directory when using the default pipeline output service.
+     *
+     * A later call replaces the previous override. Publishers must retrieve this directory through the resource-specific output lookup.
+     * This setting does not change temporary directories or redirect any file writes.
+     * Custom pipeline output services determine their own directory mappings.
+     * @param path A directory path relative to the global pipeline output directory, or a fully qualified directory path.
+     * @returns The resource builder.
+     */
+    withPipelineOutputDirectory(path: string): ContainerRegistryResourcePromise;
     /**
      * Declares that a resource requires a specific command/executable to be available on the local machine PATH before it can start.
      *
@@ -13708,6 +13728,29 @@ class ContainerRegistryResourceImpl extends ResourceBuilderBase<ContainerRegistr
         const buildImage = options?.buildImage;
         const runtimeImage = options?.runtimeImage;
         return new ContainerRegistryResourcePromiseImpl(this._withDockerfileBaseImageInternal(buildImage, runtimeImage), this._client);
+    }
+
+    /** @internal */
+    private async _withPipelineOutputDirectoryInternal(path: string): Promise<ContainerRegistryResource> {
+        const rpcArgs: Record<string, unknown> = { builder: this._handle, path };
+        const result = await this._client.invokeCapability<ContainerRegistryResourceHandle>(
+            'Aspire.Hosting/withPipelineOutputDirectory',
+            rpcArgs
+        );
+        return new ContainerRegistryResourceImpl(result, this._client);
+    }
+
+    /**
+     * Configures this resource's output directory when using the default pipeline output service.
+     *
+     * A later call replaces the previous override. Publishers must retrieve this directory through the resource-specific output lookup.
+     * This setting does not change temporary directories or redirect any file writes.
+     * Custom pipeline output services determine their own directory mappings.
+     * @param path A directory path relative to the global pipeline output directory, or a fully qualified directory path.
+     * @returns The resource builder.
+     */
+    withPipelineOutputDirectory(path: string): ContainerRegistryResourcePromise {
+        return new ContainerRegistryResourcePromiseImpl(this._withPipelineOutputDirectoryInternal(path), this._client);
     }
 
     /** @internal */
@@ -14974,6 +15017,7 @@ class ContainerRegistryResourceImpl extends ResourceBuilderBase<ContainerRegistr
 const ContainerRegistryResourcePromiseImpl = $aspireCreateFluentPromiseClass<ContainerRegistryResource, ContainerRegistryResourcePromise>((): $aspireFluentPromiseTransitions => ({
     ["withContainerRegistry"]: () => ContainerRegistryResourcePromiseImpl,
     ["withDockerfileBaseImage"]: () => ContainerRegistryResourcePromiseImpl,
+    ["withPipelineOutputDirectory"]: () => ContainerRegistryResourcePromiseImpl,
     ["withRequiredCommand"]: () => ContainerRegistryResourcePromiseImpl,
     ["withRequiredCommandValidation"]: () => ContainerRegistryResourcePromiseImpl,
     ["withSessionLifetime"]: () => ContainerRegistryResourcePromiseImpl,
@@ -15263,6 +15307,16 @@ export interface ContainerResource {
      * @deprecated PublishAsConnectionString only works with the manifest publisher and is obsolete. Use AddConnectionString in publish-mode app model code instead.
      */
     publishAsConnectionString(): ContainerResourcePromise;
+    /**
+     * Configures this resource's output directory when using the default pipeline output service.
+     *
+     * A later call replaces the previous override. Publishers must retrieve this directory through the resource-specific output lookup.
+     * This setting does not change temporary directories or redirect any file writes.
+     * Custom pipeline output services determine their own directory mappings.
+     * @param path A directory path relative to the global pipeline output directory, or a fully qualified directory path.
+     * @returns The resource builder.
+     */
+    withPipelineOutputDirectory(path: string): ContainerResourcePromise;
     /**
      * Declares that a resource requires a specific command/executable to be available on the local machine PATH before it can start.
      *
@@ -16098,6 +16152,16 @@ export interface ContainerResourcePromise extends PromiseLike<ContainerResource>
      * @deprecated PublishAsConnectionString only works with the manifest publisher and is obsolete. Use AddConnectionString in publish-mode app model code instead.
      */
     publishAsConnectionString(): ContainerResourcePromise;
+    /**
+     * Configures this resource's output directory when using the default pipeline output service.
+     *
+     * A later call replaces the previous override. Publishers must retrieve this directory through the resource-specific output lookup.
+     * This setting does not change temporary directories or redirect any file writes.
+     * Custom pipeline output services determine their own directory mappings.
+     * @param path A directory path relative to the global pipeline output directory, or a fully qualified directory path.
+     * @returns The resource builder.
+     */
+    withPipelineOutputDirectory(path: string): ContainerResourcePromise;
     /**
      * Declares that a resource requires a specific command/executable to be available on the local machine PATH before it can start.
      *
@@ -17314,6 +17378,29 @@ class ContainerResourceImpl extends ResourceBuilderBase<ContainerResourceHandle>
      */
     publishAsConnectionString(): ContainerResourcePromise {
         return new ContainerResourcePromiseImpl(this._publishAsConnectionStringInternal(), this._client);
+    }
+
+    /** @internal */
+    private async _withPipelineOutputDirectoryInternal(path: string): Promise<ContainerResource> {
+        const rpcArgs: Record<string, unknown> = { builder: this._handle, path };
+        const result = await this._client.invokeCapability<ContainerResourceHandle>(
+            'Aspire.Hosting/withPipelineOutputDirectory',
+            rpcArgs
+        );
+        return new ContainerResourceImpl(result, this._client);
+    }
+
+    /**
+     * Configures this resource's output directory when using the default pipeline output service.
+     *
+     * A later call replaces the previous override. Publishers must retrieve this directory through the resource-specific output lookup.
+     * This setting does not change temporary directories or redirect any file writes.
+     * Custom pipeline output services determine their own directory mappings.
+     * @param path A directory path relative to the global pipeline output directory, or a fully qualified directory path.
+     * @returns The resource builder.
+     */
+    withPipelineOutputDirectory(path: string): ContainerResourcePromise {
+        return new ContainerResourcePromiseImpl(this._withPipelineOutputDirectoryInternal(path), this._client);
     }
 
     /** @internal */
@@ -19551,6 +19638,7 @@ const ContainerResourcePromiseImpl = $aspireCreateFluentPromiseClass<ContainerRe
     ["withMcpServer"]: () => ContainerResourcePromiseImpl,
     ["withOtlpExporter"]: () => ContainerResourcePromiseImpl,
     ["publishAsConnectionString"]: () => ContainerResourcePromiseImpl,
+    ["withPipelineOutputDirectory"]: () => ContainerResourcePromiseImpl,
     ["withRequiredCommand"]: () => ContainerResourcePromiseImpl,
     ["withRequiredCommandValidation"]: () => ContainerResourcePromiseImpl,
     ["withSessionLifetime"]: () => ContainerResourcePromiseImpl,
@@ -19688,6 +19776,16 @@ export interface CSharpAppResource {
      * @param options Additional options.
      */
     withOtlpExporter(options?: WithOtlpExporterOptions): CSharpAppResourcePromise;
+    /**
+     * Configures this resource's output directory when using the default pipeline output service.
+     *
+     * A later call replaces the previous override. Publishers must retrieve this directory through the resource-specific output lookup.
+     * This setting does not change temporary directories or redirect any file writes.
+     * Custom pipeline output services determine their own directory mappings.
+     * @param path A directory path relative to the global pipeline output directory, or a fully qualified directory path.
+     * @returns The resource builder.
+     */
+    withPipelineOutputDirectory(path: string): CSharpAppResourcePromise;
     /**
      * Configures how many replicas of the project should be created for the project.
      * @param replicas The number of replicas.
@@ -20363,6 +20461,16 @@ export interface CSharpAppResourcePromise extends PromiseLike<CSharpAppResource>
      * @param options Additional options.
      */
     withOtlpExporter(options?: WithOtlpExporterOptions): CSharpAppResourcePromise;
+    /**
+     * Configures this resource's output directory when using the default pipeline output service.
+     *
+     * A later call replaces the previous override. Publishers must retrieve this directory through the resource-specific output lookup.
+     * This setting does not change temporary directories or redirect any file writes.
+     * Custom pipeline output services determine their own directory mappings.
+     * @param path A directory path relative to the global pipeline output directory, or a fully qualified directory path.
+     * @returns The resource builder.
+     */
+    withPipelineOutputDirectory(path: string): CSharpAppResourcePromise;
     /**
      * Configures how many replicas of the project should be created for the project.
      * @param replicas The number of replicas.
@@ -21107,6 +21215,29 @@ class CSharpAppResourceImpl extends ResourceBuilderBase<CSharpAppResourceHandle>
     withOtlpExporter(options?: WithOtlpExporterOptions): CSharpAppResourcePromise {
         const protocol = options?.protocol;
         return new CSharpAppResourcePromiseImpl(this._withOtlpExporterInternal(protocol), this._client);
+    }
+
+    /** @internal */
+    private async _withPipelineOutputDirectoryInternal(path: string): Promise<CSharpAppResource> {
+        const rpcArgs: Record<string, unknown> = { builder: this._handle, path };
+        const result = await this._client.invokeCapability<CSharpAppResourceHandle>(
+            'Aspire.Hosting/withPipelineOutputDirectory',
+            rpcArgs
+        );
+        return new CSharpAppResourceImpl(result, this._client);
+    }
+
+    /**
+     * Configures this resource's output directory when using the default pipeline output service.
+     *
+     * A later call replaces the previous override. Publishers must retrieve this directory through the resource-specific output lookup.
+     * This setting does not change temporary directories or redirect any file writes.
+     * Custom pipeline output services determine their own directory mappings.
+     * @param path A directory path relative to the global pipeline output directory, or a fully qualified directory path.
+     * @returns The resource builder.
+     */
+    withPipelineOutputDirectory(path: string): CSharpAppResourcePromise {
+        return new CSharpAppResourcePromiseImpl(this._withPipelineOutputDirectoryInternal(path), this._client);
     }
 
     /** @internal */
@@ -23422,6 +23553,7 @@ const CSharpAppResourcePromiseImpl = $aspireCreateFluentPromiseClass<CSharpAppRe
     ["withDockerfileBaseImage"]: () => CSharpAppResourcePromiseImpl,
     ["withMcpServer"]: () => CSharpAppResourcePromiseImpl,
     ["withOtlpExporter"]: () => CSharpAppResourcePromiseImpl,
+    ["withPipelineOutputDirectory"]: () => CSharpAppResourcePromiseImpl,
     ["withReplicas"]: () => CSharpAppResourcePromiseImpl,
     ["disableForwardedHeaders"]: () => CSharpAppResourcePromiseImpl,
     ["publishAsDockerFile"]: () => CSharpAppResourcePromiseImpl,
@@ -23625,6 +23757,16 @@ export interface DotnetToolResource {
      * @param options Additional options.
      */
     withOtlpExporter(options?: WithOtlpExporterOptions): DotnetToolResourcePromise;
+    /**
+     * Configures this resource's output directory when using the default pipeline output service.
+     *
+     * A later call replaces the previous override. Publishers must retrieve this directory through the resource-specific output lookup.
+     * This setting does not change temporary directories or redirect any file writes.
+     * Custom pipeline output services determine their own directory mappings.
+     * @param path A directory path relative to the global pipeline output directory, or a fully qualified directory path.
+     * @returns The resource builder.
+     */
+    withPipelineOutputDirectory(path: string): DotnetToolResourcePromise;
     /**
      * Declares that a resource requires a specific command/executable to be available on the local machine PATH before it can start.
      *
@@ -24336,6 +24478,16 @@ export interface DotnetToolResourcePromise extends PromiseLike<DotnetToolResourc
      * @param options Additional options.
      */
     withOtlpExporter(options?: WithOtlpExporterOptions): DotnetToolResourcePromise;
+    /**
+     * Configures this resource's output directory when using the default pipeline output service.
+     *
+     * A later call replaces the previous override. Publishers must retrieve this directory through the resource-specific output lookup.
+     * This setting does not change temporary directories or redirect any file writes.
+     * Custom pipeline output services determine their own directory mappings.
+     * @param path A directory path relative to the global pipeline output directory, or a fully qualified directory path.
+     * @returns The resource builder.
+     */
+    withPipelineOutputDirectory(path: string): DotnetToolResourcePromise;
     /**
      * Declares that a resource requires a specific command/executable to be available on the local machine PATH before it can start.
      *
@@ -25238,6 +25390,29 @@ class DotnetToolResourceImpl extends ResourceBuilderBase<DotnetToolResourceHandl
     withOtlpExporter(options?: WithOtlpExporterOptions): DotnetToolResourcePromise {
         const protocol = options?.protocol;
         return new DotnetToolResourcePromiseImpl(this._withOtlpExporterInternal(protocol), this._client);
+    }
+
+    /** @internal */
+    private async _withPipelineOutputDirectoryInternal(path: string): Promise<DotnetToolResource> {
+        const rpcArgs: Record<string, unknown> = { builder: this._handle, path };
+        const result = await this._client.invokeCapability<DotnetToolResourceHandle>(
+            'Aspire.Hosting/withPipelineOutputDirectory',
+            rpcArgs
+        );
+        return new DotnetToolResourceImpl(result, this._client);
+    }
+
+    /**
+     * Configures this resource's output directory when using the default pipeline output service.
+     *
+     * A later call replaces the previous override. Publishers must retrieve this directory through the resource-specific output lookup.
+     * This setting does not change temporary directories or redirect any file writes.
+     * Custom pipeline output services determine their own directory mappings.
+     * @param path A directory path relative to the global pipeline output directory, or a fully qualified directory path.
+     * @returns The resource builder.
+     */
+    withPipelineOutputDirectory(path: string): DotnetToolResourcePromise {
+        return new DotnetToolResourcePromiseImpl(this._withPipelineOutputDirectoryInternal(path), this._client);
     }
 
     /** @internal */
@@ -27481,6 +27656,7 @@ const DotnetToolResourcePromiseImpl = $aspireCreateFluentPromiseClass<DotnetTool
     ["withWorkingDirectory"]: () => DotnetToolResourcePromiseImpl,
     ["withMcpServer"]: () => DotnetToolResourcePromiseImpl,
     ["withOtlpExporter"]: () => DotnetToolResourcePromiseImpl,
+    ["withPipelineOutputDirectory"]: () => DotnetToolResourcePromiseImpl,
     ["withRequiredCommand"]: () => DotnetToolResourcePromiseImpl,
     ["withRequiredCommandValidation"]: () => DotnetToolResourcePromiseImpl,
     ["withSessionLifetime"]: () => DotnetToolResourcePromiseImpl,
@@ -27648,6 +27824,16 @@ export interface ExecutableResource {
      * @param options Additional options.
      */
     withOtlpExporter(options?: WithOtlpExporterOptions): ExecutableResourcePromise;
+    /**
+     * Configures this resource's output directory when using the default pipeline output service.
+     *
+     * A later call replaces the previous override. Publishers must retrieve this directory through the resource-specific output lookup.
+     * This setting does not change temporary directories or redirect any file writes.
+     * Custom pipeline output services determine their own directory mappings.
+     * @param path A directory path relative to the global pipeline output directory, or a fully qualified directory path.
+     * @returns The resource builder.
+     */
+    withPipelineOutputDirectory(path: string): ExecutableResourcePromise;
     /**
      * Declares that a resource requires a specific command/executable to be available on the local machine PATH before it can start.
      *
@@ -28320,6 +28506,16 @@ export interface ExecutableResourcePromise extends PromiseLike<ExecutableResourc
      * @param options Additional options.
      */
     withOtlpExporter(options?: WithOtlpExporterOptions): ExecutableResourcePromise;
+    /**
+     * Configures this resource's output directory when using the default pipeline output service.
+     *
+     * A later call replaces the previous override. Publishers must retrieve this directory through the resource-specific output lookup.
+     * This setting does not change temporary directories or redirect any file writes.
+     * Custom pipeline output services determine their own directory mappings.
+     * @param path A directory path relative to the global pipeline output directory, or a fully qualified directory path.
+     * @returns The resource builder.
+     */
+    withPipelineOutputDirectory(path: string): ExecutableResourcePromise;
     /**
      * Declares that a resource requires a specific command/executable to be available on the local machine PATH before it can start.
      *
@@ -29112,6 +29308,29 @@ class ExecutableResourceImpl extends ResourceBuilderBase<ExecutableResourceHandl
     withOtlpExporter(options?: WithOtlpExporterOptions): ExecutableResourcePromise {
         const protocol = options?.protocol;
         return new ExecutableResourcePromiseImpl(this._withOtlpExporterInternal(protocol), this._client);
+    }
+
+    /** @internal */
+    private async _withPipelineOutputDirectoryInternal(path: string): Promise<ExecutableResource> {
+        const rpcArgs: Record<string, unknown> = { builder: this._handle, path };
+        const result = await this._client.invokeCapability<ExecutableResourceHandle>(
+            'Aspire.Hosting/withPipelineOutputDirectory',
+            rpcArgs
+        );
+        return new ExecutableResourceImpl(result, this._client);
+    }
+
+    /**
+     * Configures this resource's output directory when using the default pipeline output service.
+     *
+     * A later call replaces the previous override. Publishers must retrieve this directory through the resource-specific output lookup.
+     * This setting does not change temporary directories or redirect any file writes.
+     * Custom pipeline output services determine their own directory mappings.
+     * @param path A directory path relative to the global pipeline output directory, or a fully qualified directory path.
+     * @returns The resource builder.
+     */
+    withPipelineOutputDirectory(path: string): ExecutableResourcePromise {
+        return new ExecutableResourcePromiseImpl(this._withPipelineOutputDirectoryInternal(path), this._client);
     }
 
     /** @internal */
@@ -31349,6 +31568,7 @@ const ExecutableResourcePromiseImpl = $aspireCreateFluentPromiseClass<Executable
     ["withWorkingDirectory"]: () => ExecutableResourcePromiseImpl,
     ["withMcpServer"]: () => ExecutableResourcePromiseImpl,
     ["withOtlpExporter"]: () => ExecutableResourcePromiseImpl,
+    ["withPipelineOutputDirectory"]: () => ExecutableResourcePromiseImpl,
     ["withRequiredCommand"]: () => ExecutableResourcePromiseImpl,
     ["withRequiredCommandValidation"]: () => ExecutableResourcePromiseImpl,
     ["withSessionLifetime"]: () => ExecutableResourcePromiseImpl,
@@ -31477,6 +31697,16 @@ export interface ExternalServiceResource {
      * @param options Additional options.
      */
     withHttpHealthCheck(options?: WithHttpHealthCheckOptions): ExternalServiceResourcePromise;
+    /**
+     * Configures this resource's output directory when using the default pipeline output service.
+     *
+     * A later call replaces the previous override. Publishers must retrieve this directory through the resource-specific output lookup.
+     * This setting does not change temporary directories or redirect any file writes.
+     * Custom pipeline output services determine their own directory mappings.
+     * @param path A directory path relative to the global pipeline output directory, or a fully qualified directory path.
+     * @returns The resource builder.
+     */
+    withPipelineOutputDirectory(path: string): ExternalServiceResourcePromise;
     /**
      * Declares that a resource requires a specific command/executable to be available on the local machine PATH before it can start.
      *
@@ -31821,6 +32051,16 @@ export interface ExternalServiceResourcePromise extends PromiseLike<ExternalServ
      * @param options Additional options.
      */
     withHttpHealthCheck(options?: WithHttpHealthCheckOptions): ExternalServiceResourcePromise;
+    /**
+     * Configures this resource's output directory when using the default pipeline output service.
+     *
+     * A later call replaces the previous override. Publishers must retrieve this directory through the resource-specific output lookup.
+     * This setting does not change temporary directories or redirect any file writes.
+     * Custom pipeline output services determine their own directory mappings.
+     * @param path A directory path relative to the global pipeline output directory, or a fully qualified directory path.
+     * @returns The resource builder.
+     */
+    withPipelineOutputDirectory(path: string): ExternalServiceResourcePromise;
     /**
      * Declares that a resource requires a specific command/executable to be available on the local machine PATH before it can start.
      *
@@ -32221,6 +32461,29 @@ class ExternalServiceResourceImpl extends ResourceBuilderBase<ExternalServiceRes
         const statusCode = options?.statusCode;
         const endpointName = options?.endpointName;
         return new ExternalServiceResourcePromiseImpl(this._withHttpHealthCheckInternal(path, statusCode, endpointName), this._client);
+    }
+
+    /** @internal */
+    private async _withPipelineOutputDirectoryInternal(path: string): Promise<ExternalServiceResource> {
+        const rpcArgs: Record<string, unknown> = { builder: this._handle, path };
+        const result = await this._client.invokeCapability<ExternalServiceResourceHandle>(
+            'Aspire.Hosting/withPipelineOutputDirectory',
+            rpcArgs
+        );
+        return new ExternalServiceResourceImpl(result, this._client);
+    }
+
+    /**
+     * Configures this resource's output directory when using the default pipeline output service.
+     *
+     * A later call replaces the previous override. Publishers must retrieve this directory through the resource-specific output lookup.
+     * This setting does not change temporary directories or redirect any file writes.
+     * Custom pipeline output services determine their own directory mappings.
+     * @param path A directory path relative to the global pipeline output directory, or a fully qualified directory path.
+     * @returns The resource builder.
+     */
+    withPipelineOutputDirectory(path: string): ExternalServiceResourcePromise {
+        return new ExternalServiceResourcePromiseImpl(this._withPipelineOutputDirectoryInternal(path), this._client);
     }
 
     /** @internal */
@@ -33488,6 +33751,7 @@ const ExternalServiceResourcePromiseImpl = $aspireCreateFluentPromiseClass<Exter
     ["withContainerRegistry"]: () => ExternalServiceResourcePromiseImpl,
     ["withDockerfileBaseImage"]: () => ExternalServiceResourcePromiseImpl,
     ["withHttpHealthCheck"]: () => ExternalServiceResourcePromiseImpl,
+    ["withPipelineOutputDirectory"]: () => ExternalServiceResourcePromiseImpl,
     ["withRequiredCommand"]: () => ExternalServiceResourcePromiseImpl,
     ["withRequiredCommandValidation"]: () => ExternalServiceResourcePromiseImpl,
     ["withSessionLifetime"]: () => ExternalServiceResourcePromiseImpl,
@@ -33602,6 +33866,16 @@ export interface ParameterResource {
      * @returns Resource builder for the parameter.
      */
     withCustomInput(options: ParameterCustomInputOptions): ParameterResourcePromise;
+    /**
+     * Configures this resource's output directory when using the default pipeline output service.
+     *
+     * A later call replaces the previous override. Publishers must retrieve this directory through the resource-specific output lookup.
+     * This setting does not change temporary directories or redirect any file writes.
+     * Custom pipeline output services determine their own directory mappings.
+     * @param path A directory path relative to the global pipeline output directory, or a fully qualified directory path.
+     * @returns The resource builder.
+     */
+    withPipelineOutputDirectory(path: string): ParameterResourcePromise;
     /**
      * Declares that a resource requires a specific command/executable to be available on the local machine PATH before it can start.
      *
@@ -33988,6 +34262,16 @@ export interface ParameterResourcePromise extends PromiseLike<ParameterResource>
      * @returns Resource builder for the parameter.
      */
     withCustomInput(options: ParameterCustomInputOptions): ParameterResourcePromise;
+    /**
+     * Configures this resource's output directory when using the default pipeline output service.
+     *
+     * A later call replaces the previous override. Publishers must retrieve this directory through the resource-specific output lookup.
+     * This setting does not change temporary directories or redirect any file writes.
+     * Custom pipeline output services determine their own directory mappings.
+     * @param path A directory path relative to the global pipeline output directory, or a fully qualified directory path.
+     * @returns The resource builder.
+     */
+    withPipelineOutputDirectory(path: string): ParameterResourcePromise;
     /**
      * Declares that a resource requires a specific command/executable to be available on the local machine PATH before it can start.
      *
@@ -34468,6 +34752,29 @@ class ParameterResourceImpl extends ResourceBuilderBase<ParameterResourceHandle>
      */
     withCustomInput(options: ParameterCustomInputOptions): ParameterResourcePromise {
         return new ParameterResourcePromiseImpl(this._withCustomInputInternal(options), this._client);
+    }
+
+    /** @internal */
+    private async _withPipelineOutputDirectoryInternal(path: string): Promise<ParameterResource> {
+        const rpcArgs: Record<string, unknown> = { builder: this._handle, path };
+        const result = await this._client.invokeCapability<ParameterResourceHandle>(
+            'Aspire.Hosting/withPipelineOutputDirectory',
+            rpcArgs
+        );
+        return new ParameterResourceImpl(result, this._client);
+    }
+
+    /**
+     * Configures this resource's output directory when using the default pipeline output service.
+     *
+     * A later call replaces the previous override. Publishers must retrieve this directory through the resource-specific output lookup.
+     * This setting does not change temporary directories or redirect any file writes.
+     * Custom pipeline output services determine their own directory mappings.
+     * @param path A directory path relative to the global pipeline output directory, or a fully qualified directory path.
+     * @returns The resource builder.
+     */
+    withPipelineOutputDirectory(path: string): ParameterResourcePromise {
+        return new ParameterResourcePromiseImpl(this._withPipelineOutputDirectoryInternal(path), this._client);
     }
 
     /** @internal */
@@ -35775,6 +36082,7 @@ const ParameterResourcePromiseImpl = $aspireCreateFluentPromiseClass<ParameterRe
     ["withOptional"]: () => ParameterResourcePromiseImpl,
     ["withRequired"]: () => ParameterResourcePromiseImpl,
     ["withCustomInput"]: () => ParameterResourcePromiseImpl,
+    ["withPipelineOutputDirectory"]: () => ParameterResourcePromiseImpl,
     ["withRequiredCommand"]: () => ParameterResourcePromiseImpl,
     ["withRequiredCommandValidation"]: () => ParameterResourcePromiseImpl,
     ["withSessionLifetime"]: () => ParameterResourcePromiseImpl,
@@ -35878,6 +36186,16 @@ export interface ProjectResource {
      * @param options Additional options.
      */
     withOtlpExporter(options?: WithOtlpExporterOptions): ProjectResourcePromise;
+    /**
+     * Configures this resource's output directory when using the default pipeline output service.
+     *
+     * A later call replaces the previous override. Publishers must retrieve this directory through the resource-specific output lookup.
+     * This setting does not change temporary directories or redirect any file writes.
+     * Custom pipeline output services determine their own directory mappings.
+     * @param path A directory path relative to the global pipeline output directory, or a fully qualified directory path.
+     * @returns The resource builder.
+     */
+    withPipelineOutputDirectory(path: string): ProjectResourcePromise;
     /**
      * Configures how many replicas of the project should be created for the project.
      * @param replicas The number of replicas.
@@ -36553,6 +36871,16 @@ export interface ProjectResourcePromise extends PromiseLike<ProjectResource> {
      * @param options Additional options.
      */
     withOtlpExporter(options?: WithOtlpExporterOptions): ProjectResourcePromise;
+    /**
+     * Configures this resource's output directory when using the default pipeline output service.
+     *
+     * A later call replaces the previous override. Publishers must retrieve this directory through the resource-specific output lookup.
+     * This setting does not change temporary directories or redirect any file writes.
+     * Custom pipeline output services determine their own directory mappings.
+     * @param path A directory path relative to the global pipeline output directory, or a fully qualified directory path.
+     * @returns The resource builder.
+     */
+    withPipelineOutputDirectory(path: string): ProjectResourcePromise;
     /**
      * Configures how many replicas of the project should be created for the project.
      * @param replicas The number of replicas.
@@ -37298,6 +37626,29 @@ class ProjectResourceImpl extends ResourceBuilderBase<ProjectResourceHandle> imp
     withOtlpExporter(options?: WithOtlpExporterOptions): ProjectResourcePromise {
         const protocol = options?.protocol;
         return new ProjectResourcePromiseImpl(this._withOtlpExporterInternal(protocol), this._client);
+    }
+
+    /** @internal */
+    private async _withPipelineOutputDirectoryInternal(path: string): Promise<ProjectResource> {
+        const rpcArgs: Record<string, unknown> = { builder: this._handle, path };
+        const result = await this._client.invokeCapability<ProjectResourceHandle>(
+            'Aspire.Hosting/withPipelineOutputDirectory',
+            rpcArgs
+        );
+        return new ProjectResourceImpl(result, this._client);
+    }
+
+    /**
+     * Configures this resource's output directory when using the default pipeline output service.
+     *
+     * A later call replaces the previous override. Publishers must retrieve this directory through the resource-specific output lookup.
+     * This setting does not change temporary directories or redirect any file writes.
+     * Custom pipeline output services determine their own directory mappings.
+     * @param path A directory path relative to the global pipeline output directory, or a fully qualified directory path.
+     * @returns The resource builder.
+     */
+    withPipelineOutputDirectory(path: string): ProjectResourcePromise {
+        return new ProjectResourcePromiseImpl(this._withPipelineOutputDirectoryInternal(path), this._client);
     }
 
     /** @internal */
@@ -39613,6 +39964,7 @@ const ProjectResourcePromiseImpl = $aspireCreateFluentPromiseClass<ProjectResour
     ["withDockerfileBaseImage"]: () => ProjectResourcePromiseImpl,
     ["withMcpServer"]: () => ProjectResourcePromiseImpl,
     ["withOtlpExporter"]: () => ProjectResourcePromiseImpl,
+    ["withPipelineOutputDirectory"]: () => ProjectResourcePromiseImpl,
     ["withReplicas"]: () => ProjectResourcePromiseImpl,
     ["disableForwardedHeaders"]: () => ProjectResourcePromiseImpl,
     ["publishAsDockerFile"]: () => ProjectResourcePromiseImpl,
@@ -39943,6 +40295,16 @@ export interface TestDatabaseResource {
      * @deprecated PublishAsConnectionString only works with the manifest publisher and is obsolete. Use AddConnectionString in publish-mode app model code instead.
      */
     publishAsConnectionString(): TestDatabaseResourcePromise;
+    /**
+     * Configures this resource's output directory when using the default pipeline output service.
+     *
+     * A later call replaces the previous override. Publishers must retrieve this directory through the resource-specific output lookup.
+     * This setting does not change temporary directories or redirect any file writes.
+     * Custom pipeline output services determine their own directory mappings.
+     * @param path A directory path relative to the global pipeline output directory, or a fully qualified directory path.
+     * @returns The resource builder.
+     */
+    withPipelineOutputDirectory(path: string): TestDatabaseResourcePromise;
     /**
      * Declares that a resource requires a specific command/executable to be available on the local machine PATH before it can start.
      *
@@ -40778,6 +41140,16 @@ export interface TestDatabaseResourcePromise extends PromiseLike<TestDatabaseRes
      * @deprecated PublishAsConnectionString only works with the manifest publisher and is obsolete. Use AddConnectionString in publish-mode app model code instead.
      */
     publishAsConnectionString(): TestDatabaseResourcePromise;
+    /**
+     * Configures this resource's output directory when using the default pipeline output service.
+     *
+     * A later call replaces the previous override. Publishers must retrieve this directory through the resource-specific output lookup.
+     * This setting does not change temporary directories or redirect any file writes.
+     * Custom pipeline output services determine their own directory mappings.
+     * @param path A directory path relative to the global pipeline output directory, or a fully qualified directory path.
+     * @returns The resource builder.
+     */
+    withPipelineOutputDirectory(path: string): TestDatabaseResourcePromise;
     /**
      * Declares that a resource requires a specific command/executable to be available on the local machine PATH before it can start.
      *
@@ -41993,6 +42365,29 @@ class TestDatabaseResourceImpl extends ResourceBuilderBase<TestDatabaseResourceH
      */
     publishAsConnectionString(): TestDatabaseResourcePromise {
         return new TestDatabaseResourcePromiseImpl(this._publishAsConnectionStringInternal(), this._client);
+    }
+
+    /** @internal */
+    private async _withPipelineOutputDirectoryInternal(path: string): Promise<TestDatabaseResource> {
+        const rpcArgs: Record<string, unknown> = { builder: this._handle, path };
+        const result = await this._client.invokeCapability<TestDatabaseResourceHandle>(
+            'Aspire.Hosting/withPipelineOutputDirectory',
+            rpcArgs
+        );
+        return new TestDatabaseResourceImpl(result, this._client);
+    }
+
+    /**
+     * Configures this resource's output directory when using the default pipeline output service.
+     *
+     * A later call replaces the previous override. Publishers must retrieve this directory through the resource-specific output lookup.
+     * This setting does not change temporary directories or redirect any file writes.
+     * Custom pipeline output services determine their own directory mappings.
+     * @param path A directory path relative to the global pipeline output directory, or a fully qualified directory path.
+     * @returns The resource builder.
+     */
+    withPipelineOutputDirectory(path: string): TestDatabaseResourcePromise {
+        return new TestDatabaseResourcePromiseImpl(this._withPipelineOutputDirectoryInternal(path), this._client);
     }
 
     /** @internal */
@@ -44230,6 +44625,7 @@ const TestDatabaseResourcePromiseImpl = $aspireCreateFluentPromiseClass<TestData
     ["withMcpServer"]: () => TestDatabaseResourcePromiseImpl,
     ["withOtlpExporter"]: () => TestDatabaseResourcePromiseImpl,
     ["publishAsConnectionString"]: () => TestDatabaseResourcePromiseImpl,
+    ["withPipelineOutputDirectory"]: () => TestDatabaseResourcePromiseImpl,
     ["withRequiredCommand"]: () => TestDatabaseResourcePromiseImpl,
     ["withRequiredCommandValidation"]: () => TestDatabaseResourcePromiseImpl,
     ["withSessionLifetime"]: () => TestDatabaseResourcePromiseImpl,
@@ -44555,6 +44951,16 @@ export interface TestRedisResource {
      * @deprecated PublishAsConnectionString only works with the manifest publisher and is obsolete. Use AddConnectionString in publish-mode app model code instead.
      */
     publishAsConnectionString(): TestRedisResourcePromise;
+    /**
+     * Configures this resource's output directory when using the default pipeline output service.
+     *
+     * A later call replaces the previous override. Publishers must retrieve this directory through the resource-specific output lookup.
+     * This setting does not change temporary directories or redirect any file writes.
+     * Custom pipeline output services determine their own directory mappings.
+     * @param path A directory path relative to the global pipeline output directory, or a fully qualified directory path.
+     * @returns The resource builder.
+     */
+    withPipelineOutputDirectory(path: string): TestRedisResourcePromise;
     /**
      * Declares that a resource requires a specific command/executable to be available on the local machine PATH before it can start.
      *
@@ -45474,6 +45880,16 @@ export interface TestRedisResourcePromise extends PromiseLike<TestRedisResource>
      * @deprecated PublishAsConnectionString only works with the manifest publisher and is obsolete. Use AddConnectionString in publish-mode app model code instead.
      */
     publishAsConnectionString(): TestRedisResourcePromise;
+    /**
+     * Configures this resource's output directory when using the default pipeline output service.
+     *
+     * A later call replaces the previous override. Publishers must retrieve this directory through the resource-specific output lookup.
+     * This setting does not change temporary directories or redirect any file writes.
+     * Custom pipeline output services determine their own directory mappings.
+     * @param path A directory path relative to the global pipeline output directory, or a fully qualified directory path.
+     * @returns The resource builder.
+     */
+    withPipelineOutputDirectory(path: string): TestRedisResourcePromise;
     /**
      * Declares that a resource requires a specific command/executable to be available on the local machine PATH before it can start.
      *
@@ -46773,6 +47189,29 @@ class TestRedisResourceImpl extends ResourceBuilderBase<TestRedisResourceHandle>
      */
     publishAsConnectionString(): TestRedisResourcePromise {
         return new TestRedisResourcePromiseImpl(this._publishAsConnectionStringInternal(), this._client);
+    }
+
+    /** @internal */
+    private async _withPipelineOutputDirectoryInternal(path: string): Promise<TestRedisResource> {
+        const rpcArgs: Record<string, unknown> = { builder: this._handle, path };
+        const result = await this._client.invokeCapability<TestRedisResourceHandle>(
+            'Aspire.Hosting/withPipelineOutputDirectory',
+            rpcArgs
+        );
+        return new TestRedisResourceImpl(result, this._client);
+    }
+
+    /**
+     * Configures this resource's output directory when using the default pipeline output service.
+     *
+     * A later call replaces the previous override. Publishers must retrieve this directory through the resource-specific output lookup.
+     * This setting does not change temporary directories or redirect any file writes.
+     * Custom pipeline output services determine their own directory mappings.
+     * @param path A directory path relative to the global pipeline output directory, or a fully qualified directory path.
+     * @returns The resource builder.
+     */
+    withPipelineOutputDirectory(path: string): TestRedisResourcePromise {
+        return new TestRedisResourcePromiseImpl(this._withPipelineOutputDirectoryInternal(path), this._client);
     }
 
     /** @internal */
@@ -49321,6 +49760,7 @@ const TestRedisResourcePromiseImpl = $aspireCreateFluentPromiseClass<TestRedisRe
     ["withMcpServer"]: () => TestRedisResourcePromiseImpl,
     ["withOtlpExporter"]: () => TestRedisResourcePromiseImpl,
     ["publishAsConnectionString"]: () => TestRedisResourcePromiseImpl,
+    ["withPipelineOutputDirectory"]: () => TestRedisResourcePromiseImpl,
     ["withRequiredCommand"]: () => TestRedisResourcePromiseImpl,
     ["withRequiredCommandValidation"]: () => TestRedisResourcePromiseImpl,
     ["withSessionLifetime"]: () => TestRedisResourcePromiseImpl,
@@ -49664,6 +50104,16 @@ export interface TestVaultResource {
      * @deprecated PublishAsConnectionString only works with the manifest publisher and is obsolete. Use AddConnectionString in publish-mode app model code instead.
      */
     publishAsConnectionString(): TestVaultResourcePromise;
+    /**
+     * Configures this resource's output directory when using the default pipeline output service.
+     *
+     * A later call replaces the previous override. Publishers must retrieve this directory through the resource-specific output lookup.
+     * This setting does not change temporary directories or redirect any file writes.
+     * Custom pipeline output services determine their own directory mappings.
+     * @param path A directory path relative to the global pipeline output directory, or a fully qualified directory path.
+     * @returns The resource builder.
+     */
+    withPipelineOutputDirectory(path: string): TestVaultResourcePromise;
     /**
      * Declares that a resource requires a specific command/executable to be available on the local machine PATH before it can start.
      *
@@ -50501,6 +50951,16 @@ export interface TestVaultResourcePromise extends PromiseLike<TestVaultResource>
      * @deprecated PublishAsConnectionString only works with the manifest publisher and is obsolete. Use AddConnectionString in publish-mode app model code instead.
      */
     publishAsConnectionString(): TestVaultResourcePromise;
+    /**
+     * Configures this resource's output directory when using the default pipeline output service.
+     *
+     * A later call replaces the previous override. Publishers must retrieve this directory through the resource-specific output lookup.
+     * This setting does not change temporary directories or redirect any file writes.
+     * Custom pipeline output services determine their own directory mappings.
+     * @param path A directory path relative to the global pipeline output directory, or a fully qualified directory path.
+     * @returns The resource builder.
+     */
+    withPipelineOutputDirectory(path: string): TestVaultResourcePromise;
     /**
      * Declares that a resource requires a specific command/executable to be available on the local machine PATH before it can start.
      *
@@ -51718,6 +52178,29 @@ class TestVaultResourceImpl extends ResourceBuilderBase<TestVaultResourceHandle>
      */
     publishAsConnectionString(): TestVaultResourcePromise {
         return new TestVaultResourcePromiseImpl(this._publishAsConnectionStringInternal(), this._client);
+    }
+
+    /** @internal */
+    private async _withPipelineOutputDirectoryInternal(path: string): Promise<TestVaultResource> {
+        const rpcArgs: Record<string, unknown> = { builder: this._handle, path };
+        const result = await this._client.invokeCapability<TestVaultResourceHandle>(
+            'Aspire.Hosting/withPipelineOutputDirectory',
+            rpcArgs
+        );
+        return new TestVaultResourceImpl(result, this._client);
+    }
+
+    /**
+     * Configures this resource's output directory when using the default pipeline output service.
+     *
+     * A later call replaces the previous override. Publishers must retrieve this directory through the resource-specific output lookup.
+     * This setting does not change temporary directories or redirect any file writes.
+     * Custom pipeline output services determine their own directory mappings.
+     * @param path A directory path relative to the global pipeline output directory, or a fully qualified directory path.
+     * @returns The resource builder.
+     */
+    withPipelineOutputDirectory(path: string): TestVaultResourcePromise {
+        return new TestVaultResourcePromiseImpl(this._withPipelineOutputDirectoryInternal(path), this._client);
     }
 
     /** @internal */
@@ -53970,6 +54453,7 @@ const TestVaultResourcePromiseImpl = $aspireCreateFluentPromiseClass<TestVaultRe
     ["withMcpServer"]: () => TestVaultResourcePromiseImpl,
     ["withOtlpExporter"]: () => TestVaultResourcePromiseImpl,
     ["publishAsConnectionString"]: () => TestVaultResourcePromiseImpl,
+    ["withPipelineOutputDirectory"]: () => TestVaultResourcePromiseImpl,
     ["withRequiredCommand"]: () => TestVaultResourcePromiseImpl,
     ["withRequiredCommandValidation"]: () => TestVaultResourcePromiseImpl,
     ["withSessionLifetime"]: () => TestVaultResourcePromiseImpl,
@@ -54378,6 +54862,16 @@ export interface Resource {
      */
     withDockerfileBaseImage(options?: WithDockerfileBaseImageOptions): ResourcePromise;
     /**
+     * Configures this resource's output directory when using the default pipeline output service.
+     *
+     * A later call replaces the previous override. Publishers must retrieve this directory through the resource-specific output lookup.
+     * This setting does not change temporary directories or redirect any file writes.
+     * Custom pipeline output services determine their own directory mappings.
+     * @param path A directory path relative to the global pipeline output directory, or a fully qualified directory path.
+     * @returns The resource builder.
+     */
+    withPipelineOutputDirectory(path: string): ResourcePromise;
+    /**
      * Declares that a resource requires a specific command/executable to be available on the local machine PATH before it can start.
      *
      * The command is considered valid if either:
@@ -54716,6 +55210,16 @@ export interface ResourcePromise extends PromiseLike<Resource> {
      * @returns The resource builder.
      */
     withDockerfileBaseImage(options?: WithDockerfileBaseImageOptions): ResourcePromise;
+    /**
+     * Configures this resource's output directory when using the default pipeline output service.
+     *
+     * A later call replaces the previous override. Publishers must retrieve this directory through the resource-specific output lookup.
+     * This setting does not change temporary directories or redirect any file writes.
+     * Custom pipeline output services determine their own directory mappings.
+     * @param path A directory path relative to the global pipeline output directory, or a fully qualified directory path.
+     * @returns The resource builder.
+     */
+    withPipelineOutputDirectory(path: string): ResourcePromise;
     /**
      * Declares that a resource requires a specific command/executable to be available on the local machine PATH before it can start.
      *
@@ -55093,6 +55597,29 @@ class ResourceImpl extends ResourceBuilderBase<IResourceHandle> implements Resou
         const buildImage = options?.buildImage;
         const runtimeImage = options?.runtimeImage;
         return new ResourcePromiseImpl(this._withDockerfileBaseImageInternal(buildImage, runtimeImage), this._client);
+    }
+
+    /** @internal */
+    private async _withPipelineOutputDirectoryInternal(path: string): Promise<Resource> {
+        const rpcArgs: Record<string, unknown> = { builder: this._handle, path };
+        const result = await this._client.invokeCapability<IResourceHandle>(
+            'Aspire.Hosting/withPipelineOutputDirectory',
+            rpcArgs
+        );
+        return new ResourceImpl(result, this._client);
+    }
+
+    /**
+     * Configures this resource's output directory when using the default pipeline output service.
+     *
+     * A later call replaces the previous override. Publishers must retrieve this directory through the resource-specific output lookup.
+     * This setting does not change temporary directories or redirect any file writes.
+     * Custom pipeline output services determine their own directory mappings.
+     * @param path A directory path relative to the global pipeline output directory, or a fully qualified directory path.
+     * @returns The resource builder.
+     */
+    withPipelineOutputDirectory(path: string): ResourcePromise {
+        return new ResourcePromiseImpl(this._withPipelineOutputDirectoryInternal(path), this._client);
     }
 
     /** @internal */
@@ -56359,6 +56886,7 @@ class ResourceImpl extends ResourceBuilderBase<IResourceHandle> implements Resou
 const ResourcePromiseImpl = $aspireCreateFluentPromiseClass<Resource, ResourcePromise>((): $aspireFluentPromiseTransitions => ({
     ["withContainerRegistry"]: () => ResourcePromiseImpl,
     ["withDockerfileBaseImage"]: () => ResourcePromiseImpl,
+    ["withPipelineOutputDirectory"]: () => ResourcePromiseImpl,
     ["withRequiredCommand"]: () => ResourcePromiseImpl,
     ["withRequiredCommandValidation"]: () => ResourcePromiseImpl,
     ["withSessionLifetime"]: () => ResourcePromiseImpl,

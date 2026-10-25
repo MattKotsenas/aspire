@@ -2353,6 +2353,16 @@ impl CSharpAppResource {
         Ok(IResourceWithEnvironment::new(handle, self.client.clone()))
     }
 
+    /// Configures this resource's output directory when using the default pipeline output service.
+    pub fn with_pipeline_output_directory(&self, path: &str) -> Result<IResource, Box<dyn std::error::Error>> {
+        let mut args: HashMap<String, Value> = HashMap::new();
+        args.insert("builder".to_string(), self.handle.to_json());
+        args.insert("path".to_string(), serde_json::to_value(&path).unwrap_or(Value::Null));
+        let result = self.client.invoke_capability("Aspire.Hosting/withPipelineOutputDirectory", args)?;
+        let handle: Handle = serde_json::from_value(result)?;
+        Ok(IResource::new(handle, self.client.clone()))
+    }
+
     /// Configures how many replicas of the project should be created for the project.
     pub fn with_replicas(&self, replicas: f64) -> Result<ProjectResource, Box<dyn std::error::Error>> {
         let mut args: HashMap<String, Value> = HashMap::new();
@@ -4353,6 +4363,16 @@ impl ContainerRegistryResource {
         Ok(IResource::new(handle, self.client.clone()))
     }
 
+    /// Configures this resource's output directory when using the default pipeline output service.
+    pub fn with_pipeline_output_directory(&self, path: &str) -> Result<IResource, Box<dyn std::error::Error>> {
+        let mut args: HashMap<String, Value> = HashMap::new();
+        args.insert("builder".to_string(), self.handle.to_json());
+        args.insert("path".to_string(), serde_json::to_value(&path).unwrap_or(Value::Null));
+        let result = self.client.invoke_capability("Aspire.Hosting/withPipelineOutputDirectory", args)?;
+        let handle: Handle = serde_json::from_value(result)?;
+        Ok(IResource::new(handle, self.client.clone()))
+    }
+
     /// Declares that a resource requires a specific command/executable to be available on the local machine PATH before it can start.
     pub fn with_required_command(&self, command: &str, help_link: Option<&str>) -> Result<IResource, Box<dyn std::error::Error>> {
         let mut args: HashMap<String, Value> = HashMap::new();
@@ -5338,6 +5358,16 @@ impl ContainerResource {
         let result = self.client.invoke_capability("Aspire.Hosting/publishAsConnectionString", args)?;
         let handle: Handle = serde_json::from_value(result)?;
         Ok(ContainerResource::new(handle, self.client.clone()))
+    }
+
+    /// Configures this resource's output directory when using the default pipeline output service.
+    pub fn with_pipeline_output_directory(&self, path: &str) -> Result<IResource, Box<dyn std::error::Error>> {
+        let mut args: HashMap<String, Value> = HashMap::new();
+        args.insert("builder".to_string(), self.handle.to_json());
+        args.insert("path".to_string(), serde_json::to_value(&path).unwrap_or(Value::Null));
+        let result = self.client.invoke_capability("Aspire.Hosting/withPipelineOutputDirectory", args)?;
+        let handle: Handle = serde_json::from_value(result)?;
+        Ok(IResource::new(handle, self.client.clone()))
     }
 
     /// Declares that a resource requires a specific command/executable to be available on the local machine PATH before it can start.
@@ -7271,6 +7301,16 @@ impl DotnetToolResource {
         Ok(IResourceWithEnvironment::new(handle, self.client.clone()))
     }
 
+    /// Configures this resource's output directory when using the default pipeline output service.
+    pub fn with_pipeline_output_directory(&self, path: &str) -> Result<IResource, Box<dyn std::error::Error>> {
+        let mut args: HashMap<String, Value> = HashMap::new();
+        args.insert("builder".to_string(), self.handle.to_json());
+        args.insert("path".to_string(), serde_json::to_value(&path).unwrap_or(Value::Null));
+        let result = self.client.invoke_capability("Aspire.Hosting/withPipelineOutputDirectory", args)?;
+        let handle: Handle = serde_json::from_value(result)?;
+        Ok(IResource::new(handle, self.client.clone()))
+    }
+
     /// Declares that a resource requires a specific command/executable to be available on the local machine PATH before it can start.
     pub fn with_required_command(&self, command: &str, help_link: Option<&str>) -> Result<IResource, Box<dyn std::error::Error>> {
         let mut args: HashMap<String, Value> = HashMap::new();
@@ -9191,6 +9231,16 @@ impl ExecutableResource {
         Ok(IResourceWithEnvironment::new(handle, self.client.clone()))
     }
 
+    /// Configures this resource's output directory when using the default pipeline output service.
+    pub fn with_pipeline_output_directory(&self, path: &str) -> Result<IResource, Box<dyn std::error::Error>> {
+        let mut args: HashMap<String, Value> = HashMap::new();
+        args.insert("builder".to_string(), self.handle.to_json());
+        args.insert("path".to_string(), serde_json::to_value(&path).unwrap_or(Value::Null));
+        let result = self.client.invoke_capability("Aspire.Hosting/withPipelineOutputDirectory", args)?;
+        let handle: Handle = serde_json::from_value(result)?;
+        Ok(IResource::new(handle, self.client.clone()))
+    }
+
     /// Declares that a resource requires a specific command/executable to be available on the local machine PATH before it can start.
     pub fn with_required_command(&self, command: &str, help_link: Option<&str>) -> Result<IResource, Box<dyn std::error::Error>> {
         let mut args: HashMap<String, Value> = HashMap::new();
@@ -10509,6 +10559,16 @@ impl ExternalServiceResource {
         let result = self.client.invoke_capability("Aspire.Hosting/withExternalServiceHttpHealthCheck", args)?;
         let handle: Handle = serde_json::from_value(result)?;
         Ok(ExternalServiceResource::new(handle, self.client.clone()))
+    }
+
+    /// Configures this resource's output directory when using the default pipeline output service.
+    pub fn with_pipeline_output_directory(&self, path: &str) -> Result<IResource, Box<dyn std::error::Error>> {
+        let mut args: HashMap<String, Value> = HashMap::new();
+        args.insert("builder".to_string(), self.handle.to_json());
+        args.insert("path".to_string(), serde_json::to_value(&path).unwrap_or(Value::Null));
+        let result = self.client.invoke_capability("Aspire.Hosting/withPipelineOutputDirectory", args)?;
+        let handle: Handle = serde_json::from_value(result)?;
+        Ok(IResource::new(handle, self.client.clone()))
     }
 
     /// Declares that a resource requires a specific command/executable to be available on the local machine PATH before it can start.
@@ -14103,6 +14163,16 @@ impl ParameterResource {
         Ok(ParameterResource::new(handle, self.client.clone()))
     }
 
+    /// Configures this resource's output directory when using the default pipeline output service.
+    pub fn with_pipeline_output_directory(&self, path: &str) -> Result<IResource, Box<dyn std::error::Error>> {
+        let mut args: HashMap<String, Value> = HashMap::new();
+        args.insert("builder".to_string(), self.handle.to_json());
+        args.insert("path".to_string(), serde_json::to_value(&path).unwrap_or(Value::Null));
+        let result = self.client.invoke_capability("Aspire.Hosting/withPipelineOutputDirectory", args)?;
+        let handle: Handle = serde_json::from_value(result)?;
+        Ok(IResource::new(handle, self.client.clone()))
+    }
+
     /// Declares that a resource requires a specific command/executable to be available on the local machine PATH before it can start.
     pub fn with_required_command(&self, command: &str, help_link: Option<&str>) -> Result<IResource, Box<dyn std::error::Error>> {
         let mut args: HashMap<String, Value> = HashMap::new();
@@ -15360,6 +15430,16 @@ impl ProjectResource {
         let result = self.client.invoke_capability("Aspire.Hosting/withOtlpExporter", args)?;
         let handle: Handle = serde_json::from_value(result)?;
         Ok(IResourceWithEnvironment::new(handle, self.client.clone()))
+    }
+
+    /// Configures this resource's output directory when using the default pipeline output service.
+    pub fn with_pipeline_output_directory(&self, path: &str) -> Result<IResource, Box<dyn std::error::Error>> {
+        let mut args: HashMap<String, Value> = HashMap::new();
+        args.insert("builder".to_string(), self.handle.to_json());
+        args.insert("path".to_string(), serde_json::to_value(&path).unwrap_or(Value::Null));
+        let result = self.client.invoke_capability("Aspire.Hosting/withPipelineOutputDirectory", args)?;
+        let handle: Handle = serde_json::from_value(result)?;
+        Ok(IResource::new(handle, self.client.clone()))
     }
 
     /// Configures how many replicas of the project should be created for the project.
@@ -17734,6 +17814,16 @@ impl TestDatabaseResource {
         Ok(ContainerResource::new(handle, self.client.clone()))
     }
 
+    /// Configures this resource's output directory when using the default pipeline output service.
+    pub fn with_pipeline_output_directory(&self, path: &str) -> Result<IResource, Box<dyn std::error::Error>> {
+        let mut args: HashMap<String, Value> = HashMap::new();
+        args.insert("builder".to_string(), self.handle.to_json());
+        args.insert("path".to_string(), serde_json::to_value(&path).unwrap_or(Value::Null));
+        let result = self.client.invoke_capability("Aspire.Hosting/withPipelineOutputDirectory", args)?;
+        let handle: Handle = serde_json::from_value(result)?;
+        Ok(IResource::new(handle, self.client.clone()))
+    }
+
     /// Declares that a resource requires a specific command/executable to be available on the local machine PATH before it can start.
     pub fn with_required_command(&self, command: &str, help_link: Option<&str>) -> Result<IResource, Box<dyn std::error::Error>> {
         let mut args: HashMap<String, Value> = HashMap::new();
@@ -19361,6 +19451,16 @@ impl TestRedisResource {
         let result = self.client.invoke_capability("Aspire.Hosting/publishAsConnectionString", args)?;
         let handle: Handle = serde_json::from_value(result)?;
         Ok(ContainerResource::new(handle, self.client.clone()))
+    }
+
+    /// Configures this resource's output directory when using the default pipeline output service.
+    pub fn with_pipeline_output_directory(&self, path: &str) -> Result<IResource, Box<dyn std::error::Error>> {
+        let mut args: HashMap<String, Value> = HashMap::new();
+        args.insert("builder".to_string(), self.handle.to_json());
+        args.insert("path".to_string(), serde_json::to_value(&path).unwrap_or(Value::Null));
+        let result = self.client.invoke_capability("Aspire.Hosting/withPipelineOutputDirectory", args)?;
+        let handle: Handle = serde_json::from_value(result)?;
+        Ok(IResource::new(handle, self.client.clone()))
     }
 
     /// Declares that a resource requires a specific command/executable to be available on the local machine PATH before it can start.
@@ -21250,6 +21350,16 @@ impl TestVaultResource {
         let result = self.client.invoke_capability("Aspire.Hosting/publishAsConnectionString", args)?;
         let handle: Handle = serde_json::from_value(result)?;
         Ok(ContainerResource::new(handle, self.client.clone()))
+    }
+
+    /// Configures this resource's output directory when using the default pipeline output service.
+    pub fn with_pipeline_output_directory(&self, path: &str) -> Result<IResource, Box<dyn std::error::Error>> {
+        let mut args: HashMap<String, Value> = HashMap::new();
+        args.insert("builder".to_string(), self.handle.to_json());
+        args.insert("path".to_string(), serde_json::to_value(&path).unwrap_or(Value::Null));
+        let result = self.client.invoke_capability("Aspire.Hosting/withPipelineOutputDirectory", args)?;
+        let handle: Handle = serde_json::from_value(result)?;
+        Ok(IResource::new(handle, self.client.clone()))
     }
 
     /// Declares that a resource requires a specific command/executable to be available on the local machine PATH before it can start.

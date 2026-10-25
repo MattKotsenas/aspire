@@ -1541,6 +1541,7 @@ type Aspire_Hosting_CodeGeneration_Go_TestsTestVaultResource interface {
 	WithParentRelationship(parent Resource) Aspire_Hosting_CodeGeneration_Go_TestsTestVaultResource
 	WithPersistentLifetime() Aspire_Hosting_CodeGeneration_Go_TestsTestVaultResource
 	WithPipelineConfiguration(callback func(obj PipelineConfigurationContext)) Aspire_Hosting_CodeGeneration_Go_TestsTestVaultResource
+	WithPipelineOutputDirectory(path string) Aspire_Hosting_CodeGeneration_Go_TestsTestVaultResource
 	WithPipelineStepFactory(stepName string, callback func(arg PipelineStepContext), options ...*WithPipelineStepFactoryOptions) Aspire_Hosting_CodeGeneration_Go_TestsTestVaultResource
 	WithProcessCommand(commandName string, displayName string, options *ProcessCommandExportOptions) Aspire_Hosting_CodeGeneration_Go_TestsTestVaultResource
 	WithProcessCommandFactory(commandName string, displayName string, createProcessSpec func(arg ExecuteCommandContext) *ProcessCommandSpecExportData, options ...*ProcessCommandResultExportOptions) Aspire_Hosting_CodeGeneration_Go_TestsTestVaultResource
@@ -3197,6 +3198,18 @@ func (s *aspire_Hosting_CodeGeneration_Go_TestsTestVaultResource) WithPipelineCo
 	return s
 }
 
+// WithPipelineOutputDirectory configures this resource's output directory when using the default pipeline output service.
+func (s *aspire_Hosting_CodeGeneration_Go_TestsTestVaultResource) WithPipelineOutputDirectory(path string) Aspire_Hosting_CodeGeneration_Go_TestsTestVaultResource {
+	if s.err != nil { return s }
+	ctx := context.Background()
+	reqArgs := map[string]any{
+		"builder": s.handle.ToJSON(),
+	}
+	reqArgs["path"] = serializeValue(path)
+	if _, err := s.client.invokeCapability(ctx, "Aspire.Hosting/withPipelineOutputDirectory", reqArgs); err != nil { s.setErr(err) }
+	return s
+}
+
 // WithPipelineStepFactory adds a pipeline step to the resource that will be executed during deployment.
 func (s *aspire_Hosting_CodeGeneration_Go_TestsTestVaultResource) WithPipelineStepFactory(stepName string, callback func(arg PipelineStepContext), options ...*WithPipelineStepFactoryOptions) Aspire_Hosting_CodeGeneration_Go_TestsTestVaultResource {
 	if s.err != nil { return s }
@@ -3832,6 +3845,7 @@ type CSharpAppResource interface {
 	WithParentRelationship(parent Resource) CSharpAppResource
 	WithPersistentLifetime() CSharpAppResource
 	WithPipelineConfiguration(callback func(obj PipelineConfigurationContext)) CSharpAppResource
+	WithPipelineOutputDirectory(path string) CSharpAppResource
 	WithPipelineStepFactory(stepName string, callback func(arg PipelineStepContext), options ...*WithPipelineStepFactoryOptions) CSharpAppResource
 	WithProcessCommand(commandName string, displayName string, options *ProcessCommandExportOptions) CSharpAppResource
 	WithProcessCommandFactory(commandName string, displayName string, createProcessSpec func(arg ExecuteCommandContext) *ProcessCommandSpecExportData, options ...*ProcessCommandResultExportOptions) CSharpAppResource
@@ -5207,6 +5221,18 @@ func (s *cSharpAppResource) WithPipelineConfiguration(callback func(obj Pipeline
 		reqArgs["callback"] = s.client.registerCallback(shim)
 	}
 	if _, err := s.client.invokeCapability(ctx, "Aspire.Hosting/withPipelineConfiguration", reqArgs); err != nil { s.setErr(err) }
+	return s
+}
+
+// WithPipelineOutputDirectory configures this resource's output directory when using the default pipeline output service.
+func (s *cSharpAppResource) WithPipelineOutputDirectory(path string) CSharpAppResource {
+	if s.err != nil { return s }
+	ctx := context.Background()
+	reqArgs := map[string]any{
+		"builder": s.handle.ToJSON(),
+	}
+	reqArgs["path"] = serializeValue(path)
+	if _, err := s.client.invokeCapability(ctx, "Aspire.Hosting/withPipelineOutputDirectory", reqArgs); err != nil { s.setErr(err) }
 	return s
 }
 
@@ -6784,6 +6810,7 @@ type ContainerRegistryResource interface {
 	WithParentRelationship(parent Resource) ContainerRegistryResource
 	WithPersistentLifetime() ContainerRegistryResource
 	WithPipelineConfiguration(callback func(obj PipelineConfigurationContext)) ContainerRegistryResource
+	WithPipelineOutputDirectory(path string) ContainerRegistryResource
 	WithPipelineStepFactory(stepName string, callback func(arg PipelineStepContext), options ...*WithPipelineStepFactoryOptions) ContainerRegistryResource
 	WithProcessCommand(commandName string, displayName string, options *ProcessCommandExportOptions) ContainerRegistryResource
 	WithProcessCommandFactory(commandName string, displayName string, createProcessSpec func(arg ExecuteCommandContext) *ProcessCommandSpecExportData, options ...*ProcessCommandResultExportOptions) ContainerRegistryResource
@@ -7507,6 +7534,18 @@ func (s *containerRegistryResource) WithPipelineConfiguration(callback func(obj 
 	return s
 }
 
+// WithPipelineOutputDirectory configures this resource's output directory when using the default pipeline output service.
+func (s *containerRegistryResource) WithPipelineOutputDirectory(path string) ContainerRegistryResource {
+	if s.err != nil { return s }
+	ctx := context.Background()
+	reqArgs := map[string]any{
+		"builder": s.handle.ToJSON(),
+	}
+	reqArgs["path"] = serializeValue(path)
+	if _, err := s.client.invokeCapability(ctx, "Aspire.Hosting/withPipelineOutputDirectory", reqArgs); err != nil { s.setErr(err) }
+	return s
+}
+
 // WithPipelineStepFactory adds a pipeline step to the resource that will be executed during deployment.
 func (s *containerRegistryResource) WithPipelineStepFactory(stepName string, callback func(arg PipelineStepContext), options ...*WithPipelineStepFactoryOptions) ContainerRegistryResource {
 	if s.err != nil { return s }
@@ -7889,6 +7928,7 @@ type ContainerResource interface {
 	WithParentRelationship(parent Resource) ContainerResource
 	WithPersistentLifetime() ContainerResource
 	WithPipelineConfiguration(callback func(obj PipelineConfigurationContext)) ContainerResource
+	WithPipelineOutputDirectory(path string) ContainerResource
 	WithPipelineStepFactory(stepName string, callback func(arg PipelineStepContext), options ...*WithPipelineStepFactoryOptions) ContainerResource
 	WithProcessCommand(commandName string, displayName string, options *ProcessCommandExportOptions) ContainerResource
 	WithProcessCommandFactory(commandName string, displayName string, createProcessSpec func(arg ExecuteCommandContext) *ProcessCommandSpecExportData, options ...*ProcessCommandResultExportOptions) ContainerResource
@@ -9541,6 +9581,18 @@ func (s *containerResource) WithPipelineConfiguration(callback func(obj Pipeline
 		reqArgs["callback"] = s.client.registerCallback(shim)
 	}
 	if _, err := s.client.invokeCapability(ctx, "Aspire.Hosting/withPipelineConfiguration", reqArgs); err != nil { s.setErr(err) }
+	return s
+}
+
+// WithPipelineOutputDirectory configures this resource's output directory when using the default pipeline output service.
+func (s *containerResource) WithPipelineOutputDirectory(path string) ContainerResource {
+	if s.err != nil { return s }
+	ctx := context.Background()
+	reqArgs := map[string]any{
+		"builder": s.handle.ToJSON(),
+	}
+	reqArgs["path"] = serializeValue(path)
+	if _, err := s.client.invokeCapability(ctx, "Aspire.Hosting/withPipelineOutputDirectory", reqArgs); err != nil { s.setErr(err) }
 	return s
 }
 
@@ -11620,6 +11672,7 @@ type DotnetToolResource interface {
 	WithParentRelationship(parent Resource) DotnetToolResource
 	WithPersistentLifetime() DotnetToolResource
 	WithPipelineConfiguration(callback func(obj PipelineConfigurationContext)) DotnetToolResource
+	WithPipelineOutputDirectory(path string) DotnetToolResource
 	WithPipelineStepFactory(stepName string, callback func(arg PipelineStepContext), options ...*WithPipelineStepFactoryOptions) DotnetToolResource
 	WithProcessCommand(commandName string, displayName string, options *ProcessCommandExportOptions) DotnetToolResource
 	WithProcessCommandFactory(commandName string, displayName string, createProcessSpec func(arg ExecuteCommandContext) *ProcessCommandSpecExportData, options ...*ProcessCommandResultExportOptions) DotnetToolResource
@@ -12989,6 +13042,18 @@ func (s *dotnetToolResource) WithPipelineConfiguration(callback func(obj Pipelin
 		reqArgs["callback"] = s.client.registerCallback(shim)
 	}
 	if _, err := s.client.invokeCapability(ctx, "Aspire.Hosting/withPipelineConfiguration", reqArgs); err != nil { s.setErr(err) }
+	return s
+}
+
+// WithPipelineOutputDirectory configures this resource's output directory when using the default pipeline output service.
+func (s *dotnetToolResource) WithPipelineOutputDirectory(path string) DotnetToolResource {
+	if s.err != nil { return s }
+	ctx := context.Background()
+	reqArgs := map[string]any{
+		"builder": s.handle.ToJSON(),
+	}
+	reqArgs["path"] = serializeValue(path)
+	if _, err := s.client.invokeCapability(ctx, "Aspire.Hosting/withPipelineOutputDirectory", reqArgs); err != nil { s.setErr(err) }
 	return s
 }
 
@@ -14546,6 +14611,7 @@ type ExecutableResource interface {
 	WithParentRelationship(parent Resource) ExecutableResource
 	WithPersistentLifetime() ExecutableResource
 	WithPipelineConfiguration(callback func(obj PipelineConfigurationContext)) ExecutableResource
+	WithPipelineOutputDirectory(path string) ExecutableResource
 	WithPipelineStepFactory(stepName string, callback func(arg PipelineStepContext), options ...*WithPipelineStepFactoryOptions) ExecutableResource
 	WithProcessCommand(commandName string, displayName string, options *ProcessCommandExportOptions) ExecutableResource
 	WithProcessCommandFactory(commandName string, displayName string, createProcessSpec func(arg ExecuteCommandContext) *ProcessCommandSpecExportData, options ...*ProcessCommandResultExportOptions) ExecutableResource
@@ -15912,6 +15978,18 @@ func (s *executableResource) WithPipelineConfiguration(callback func(obj Pipelin
 	return s
 }
 
+// WithPipelineOutputDirectory configures this resource's output directory when using the default pipeline output service.
+func (s *executableResource) WithPipelineOutputDirectory(path string) ExecutableResource {
+	if s.err != nil { return s }
+	ctx := context.Background()
+	reqArgs := map[string]any{
+		"builder": s.handle.ToJSON(),
+	}
+	reqArgs["path"] = serializeValue(path)
+	if _, err := s.client.invokeCapability(ctx, "Aspire.Hosting/withPipelineOutputDirectory", reqArgs); err != nil { s.setErr(err) }
+	return s
+}
+
 // WithPipelineStepFactory adds a pipeline step to the resource that will be executed during deployment.
 func (s *executableResource) WithPipelineStepFactory(stepName string, callback func(arg PipelineStepContext), options ...*WithPipelineStepFactoryOptions) ExecutableResource {
 	if s.err != nil { return s }
@@ -16616,6 +16694,7 @@ type ExternalServiceResource interface {
 	WithParentRelationship(parent Resource) ExternalServiceResource
 	WithPersistentLifetime() ExternalServiceResource
 	WithPipelineConfiguration(callback func(obj PipelineConfigurationContext)) ExternalServiceResource
+	WithPipelineOutputDirectory(path string) ExternalServiceResource
 	WithPipelineStepFactory(stepName string, callback func(arg PipelineStepContext), options ...*WithPipelineStepFactoryOptions) ExternalServiceResource
 	WithProcessCommand(commandName string, displayName string, options *ProcessCommandExportOptions) ExternalServiceResource
 	WithProcessCommandFactory(commandName string, displayName string, createProcessSpec func(arg ExecuteCommandContext) *ProcessCommandSpecExportData, options ...*ProcessCommandResultExportOptions) ExternalServiceResource
@@ -17354,6 +17433,18 @@ func (s *externalServiceResource) WithPipelineConfiguration(callback func(obj Pi
 		reqArgs["callback"] = s.client.registerCallback(shim)
 	}
 	if _, err := s.client.invokeCapability(ctx, "Aspire.Hosting/withPipelineConfiguration", reqArgs); err != nil { s.setErr(err) }
+	return s
+}
+
+// WithPipelineOutputDirectory configures this resource's output directory when using the default pipeline output service.
+func (s *externalServiceResource) WithPipelineOutputDirectory(path string) ExternalServiceResource {
+	if s.err != nil { return s }
+	ctx := context.Background()
+	reqArgs := map[string]any{
+		"builder": s.handle.ToJSON(),
+	}
+	reqArgs["path"] = serializeValue(path)
+	if _, err := s.client.invokeCapability(ctx, "Aspire.Hosting/withPipelineOutputDirectory", reqArgs); err != nil { s.setErr(err) }
 	return s
 }
 
@@ -19353,6 +19444,7 @@ type ParameterResource interface {
 	WithParentRelationship(parent Resource) ParameterResource
 	WithPersistentLifetime() ParameterResource
 	WithPipelineConfiguration(callback func(obj PipelineConfigurationContext)) ParameterResource
+	WithPipelineOutputDirectory(path string) ParameterResource
 	WithPipelineStepFactory(stepName string, callback func(arg PipelineStepContext), options ...*WithPipelineStepFactoryOptions) ParameterResource
 	WithProcessCommand(commandName string, displayName string, options *ProcessCommandExportOptions) ParameterResource
 	WithProcessCommandFactory(commandName string, displayName string, createProcessSpec func(arg ExecuteCommandContext) *ProcessCommandSpecExportData, options ...*ProcessCommandResultExportOptions) ParameterResource
@@ -20155,6 +20247,18 @@ func (s *parameterResource) WithPipelineConfiguration(callback func(obj Pipeline
 		reqArgs["callback"] = s.client.registerCallback(shim)
 	}
 	if _, err := s.client.invokeCapability(ctx, "Aspire.Hosting/withPipelineConfiguration", reqArgs); err != nil { s.setErr(err) }
+	return s
+}
+
+// WithPipelineOutputDirectory configures this resource's output directory when using the default pipeline output service.
+func (s *parameterResource) WithPipelineOutputDirectory(path string) ParameterResource {
+	if s.err != nil { return s }
+	ctx := context.Background()
+	reqArgs := map[string]any{
+		"builder": s.handle.ToJSON(),
+	}
+	reqArgs["path"] = serializeValue(path)
+	if _, err := s.client.invokeCapability(ctx, "Aspire.Hosting/withPipelineOutputDirectory", reqArgs); err != nil { s.setErr(err) }
 	return s
 }
 
@@ -21239,6 +21343,7 @@ type ProjectResource interface {
 	WithParentRelationship(parent Resource) ProjectResource
 	WithPersistentLifetime() ProjectResource
 	WithPipelineConfiguration(callback func(obj PipelineConfigurationContext)) ProjectResource
+	WithPipelineOutputDirectory(path string) ProjectResource
 	WithPipelineStepFactory(stepName string, callback func(arg PipelineStepContext), options ...*WithPipelineStepFactoryOptions) ProjectResource
 	WithProcessCommand(commandName string, displayName string, options *ProcessCommandExportOptions) ProjectResource
 	WithProcessCommandFactory(commandName string, displayName string, createProcessSpec func(arg ExecuteCommandContext) *ProcessCommandSpecExportData, options ...*ProcessCommandResultExportOptions) ProjectResource
@@ -22614,6 +22719,18 @@ func (s *projectResource) WithPipelineConfiguration(callback func(obj PipelineCo
 		reqArgs["callback"] = s.client.registerCallback(shim)
 	}
 	if _, err := s.client.invokeCapability(ctx, "Aspire.Hosting/withPipelineConfiguration", reqArgs); err != nil { s.setErr(err) }
+	return s
+}
+
+// WithPipelineOutputDirectory configures this resource's output directory when using the default pipeline output service.
+func (s *projectResource) WithPipelineOutputDirectory(path string) ProjectResource {
+	if s.err != nil { return s }
+	ctx := context.Background()
+	reqArgs := map[string]any{
+		"builder": s.handle.ToJSON(),
+	}
+	reqArgs["path"] = serializeValue(path)
+	if _, err := s.client.invokeCapability(ctx, "Aspire.Hosting/withPipelineOutputDirectory", reqArgs); err != nil { s.setErr(err) }
 	return s
 }
 
@@ -24729,6 +24846,7 @@ type TestDatabaseResource interface {
 	WithParentRelationship(parent Resource) TestDatabaseResource
 	WithPersistentLifetime() TestDatabaseResource
 	WithPipelineConfiguration(callback func(obj PipelineConfigurationContext)) TestDatabaseResource
+	WithPipelineOutputDirectory(path string) TestDatabaseResource
 	WithPipelineStepFactory(stepName string, callback func(arg PipelineStepContext), options ...*WithPipelineStepFactoryOptions) TestDatabaseResource
 	WithProcessCommand(commandName string, displayName string, options *ProcessCommandExportOptions) TestDatabaseResource
 	WithProcessCommandFactory(commandName string, displayName string, createProcessSpec func(arg ExecuteCommandContext) *ProcessCommandSpecExportData, options ...*ProcessCommandResultExportOptions) TestDatabaseResource
@@ -26384,6 +26502,18 @@ func (s *testDatabaseResource) WithPipelineConfiguration(callback func(obj Pipel
 	return s
 }
 
+// WithPipelineOutputDirectory configures this resource's output directory when using the default pipeline output service.
+func (s *testDatabaseResource) WithPipelineOutputDirectory(path string) TestDatabaseResource {
+	if s.err != nil { return s }
+	ctx := context.Background()
+	reqArgs := map[string]any{
+		"builder": s.handle.ToJSON(),
+	}
+	reqArgs["path"] = serializeValue(path)
+	if _, err := s.client.invokeCapability(ctx, "Aspire.Hosting/withPipelineOutputDirectory", reqArgs); err != nil { s.setErr(err) }
+	return s
+}
+
 // WithPipelineStepFactory adds a pipeline step to the resource that will be executed during deployment.
 func (s *testDatabaseResource) WithPipelineStepFactory(stepName string, callback func(arg PipelineStepContext), options ...*WithPipelineStepFactoryOptions) TestDatabaseResource {
 	if s.err != nil { return s }
@@ -27082,6 +27212,7 @@ type TestRedisResource interface {
 	WithPersistence(options ...*WithPersistenceOptions) TestRedisResource
 	WithPersistentLifetime() TestRedisResource
 	WithPipelineConfiguration(callback func(obj PipelineConfigurationContext)) TestRedisResource
+	WithPipelineOutputDirectory(path string) TestRedisResource
 	WithPipelineStepFactory(stepName string, callback func(arg PipelineStepContext), options ...*WithPipelineStepFactoryOptions) TestRedisResource
 	WithProcessCommand(commandName string, displayName string, options *ProcessCommandExportOptions) TestRedisResource
 	WithProcessCommandFactory(commandName string, displayName string, createProcessSpec func(arg ExecuteCommandContext) *ProcessCommandSpecExportData, options ...*ProcessCommandResultExportOptions) TestRedisResource
@@ -29020,6 +29151,18 @@ func (s *testRedisResource) WithPipelineConfiguration(callback func(obj Pipeline
 		reqArgs["callback"] = s.client.registerCallback(shim)
 	}
 	if _, err := s.client.invokeCapability(ctx, "Aspire.Hosting/withPipelineConfiguration", reqArgs); err != nil { s.setErr(err) }
+	return s
+}
+
+// WithPipelineOutputDirectory configures this resource's output directory when using the default pipeline output service.
+func (s *testRedisResource) WithPipelineOutputDirectory(path string) TestRedisResource {
+	if s.err != nil { return s }
+	ctx := context.Background()
+	reqArgs := map[string]any{
+		"builder": s.handle.ToJSON(),
+	}
+	reqArgs["path"] = serializeValue(path)
+	if _, err := s.client.invokeCapability(ctx, "Aspire.Hosting/withPipelineOutputDirectory", reqArgs); err != nil { s.setErr(err) }
 	return s
 }
 
