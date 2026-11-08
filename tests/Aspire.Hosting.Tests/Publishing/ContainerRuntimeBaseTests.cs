@@ -523,15 +523,6 @@ public class ContainerRuntimeBaseTests
 
         public List<IReadOnlyList<string>?> ArgumentLists { get; } = [];
 
-        public Task<ProcessCaptureResult> RunAndCaptureTextAsync(
-            string executablePath,
-            IReadOnlyList<string> arguments,
-            string workingDirectory,
-            IReadOnlyDictionary<string, string>? environmentVariables = null,
-            ReadOnlyMemory<byte> standardInput = default,
-            CancellationToken cancellationToken = default)
-            => throw new NotSupportedException("This test runner supports only line execution.");
-
         public IAsyncEnumerable<ProcessEvent<ReadOnlyMemory<byte>>> CreateExecution(ProcessCommand command)
             => throw new NotSupportedException("This test runner supports legacy execution until its callers are migrated.");
 

@@ -327,9 +327,11 @@ public sealed class PipelineOutputSelectionTests(ITestOutputHelper output)
         await PipelineOutputGitTestHelper.RunAsync(worktree, "config", "--local", "core.worktree", worktree);
         Assert.False(PipelineOutputRoot.IsWithinDirectory(worktree, root));
         var runner = new DefaultProcessRunner();
-        var probe = await runner.RunAndCaptureTextAsync("git",
-            ["--no-optional-locks", "rev-parse", "--is-inside-work-tree", "--show-cdup"], root,
-            cancellationToken: TestContext.Current.CancellationToken);
+        var probe = await runner.CreateExecution(new ProcessCommand("git")
+        {
+            Arguments = ["--no-optional-locks", "rev-parse", "--is-inside-work-tree", "--show-cdup"],
+            WorkingDirectory = root
+        }).DecodeText(Encoding.UTF8).ExecuteAndCaptureTextAsync(TestContext.Current.CancellationToken);
         Assert.Equal(0, probe.ExitCode);
         // Outside a configured worktree, real Git emits "false\n/absolute/worktree\n",
         // not just "false\n". That is a non-worktree result, not malformed discovery.

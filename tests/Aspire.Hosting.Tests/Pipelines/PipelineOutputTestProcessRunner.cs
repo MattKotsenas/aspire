@@ -13,17 +13,6 @@ internal sealed class PipelineOutputTestProcessRunner(Func<IReadOnlyList<string>
 
     public (Task<ProcessResult>, IAsyncDisposable) Run(ProcessSpec processSpec) => throw new NotSupportedException();
 
-    public Task<ProcessCaptureResult> RunAndCaptureTextAsync(string executablePath, IReadOnlyList<string> arguments,
-        string workingDirectory, IReadOnlyDictionary<string, string>? environmentVariables = null,
-        ReadOnlyMemory<byte> standardInput = default, CancellationToken cancellationToken = default)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        Calls.Add(arguments.ToArray());
-        Inputs.Add(standardInput.ToArray());
-        Assert.Equal("0", environmentVariables!["GIT_OPTIONAL_LOCKS"]);
-        return Task.FromResult(capture(arguments));
-    }
-
     public IAsyncEnumerable<ProcessEvent<ReadOnlyMemory<byte>>> CreateExecution(ProcessCommand command)
         => throw new NotSupportedException();
 }
