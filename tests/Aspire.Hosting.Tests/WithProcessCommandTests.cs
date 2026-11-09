@@ -1,7 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.Text;
 using System.Text.Json;
+using Aspire.Hosting.Dcp;
 using Aspire.Hosting.Dcp.Process;
 using Aspire.Hosting.Diagnostics;
 using Aspire.Hosting.Testing;
@@ -11,6 +13,7 @@ using Microsoft.AspNetCore.InternalTesting;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using AuxiliaryBackchannelRpcTarget = Aspire.Hosting.Backchannel.AuxiliaryBackchannelRpcTarget;
 using ExecuteResourceCommandRequest = Aspire.Hosting.Backchannel.ExecuteResourceCommandRequest;
 
@@ -128,12 +131,10 @@ public class WithProcessCommandTests(ITestOutputHelper testOutputHelper)
         Assert.False(result.Data?.DisplayImmediately);
         Assert.Contains("export-line", result.Data?.Value);
 
-        var processSpec = Assert.Single(processRunner.ProcessSpecs);
-        Assert.Equal("export-command-executable", processSpec.ExecutablePath);
-        Assert.Equal(["--export"], processSpec.ArgumentList);
-        Assert.Equal(5, processSpec.RetainedOutputLineCount);
-        Assert.True(processSpec.ResolveExecutablePath);
-        Assert.False(processSpec.ThrowOnNonZeroReturnCode);
+        var processCommand = Assert.Single(processRunner.Commands);
+        Assert.Equal("export-command-executable", processCommand.ExecutablePath);
+        Assert.Equal(["--export"], processCommand.Arguments);
+        Assert.True(processCommand.ResolveExecutablePath);
     }
 
     [Fact]
@@ -194,9 +195,9 @@ public class WithProcessCommandTests(ITestOutputHelper testOutputHelper)
         Assert.NotNull(capturedContext);
         Assert.Equal("hello-from-options-callback", capturedContext.Arguments.GetString("message"));
 
-        var processSpec = Assert.Single(processRunner.ProcessSpecs);
-        Assert.Equal("options-callback-executable", processSpec.ExecutablePath);
-        Assert.Equal(["--message", "hello-from-options-callback"], processSpec.ArgumentList);
+        var processCommand = Assert.Single(processRunner.Commands);
+        Assert.Equal("options-callback-executable", processCommand.ExecutablePath);
+        Assert.Equal(["--message", "hello-from-options-callback"], processCommand.Arguments);
     }
 
     [Fact]
@@ -276,15 +277,14 @@ public class WithProcessCommandTests(ITestOutputHelper testOutputHelper)
         Assert.Equal(resource.Resource.Name, capturedContext.ResourceName);
         Assert.Equal("hello-from-factory", capturedContext.Arguments.GetString("message"));
 
-        var processSpec = Assert.Single(processRunner.ProcessSpecs);
-        Assert.Equal("factory-command-executable", processSpec.ExecutablePath);
-        Assert.Equal(["--message", "hello-from-factory"], processSpec.ArgumentList);
-        Assert.Equal("/test/factory-working-directory", processSpec.WorkingDirectory);
-        Assert.Equal("hello-from-factory", processSpec.EnvironmentVariables["PROCESS_COMMAND_FACTORY_VALUE"]);
-        Assert.False(processSpec.InheritEnv);
-        Assert.Equal("from-factory-stdin", processSpec.StandardInputContent);
-        Assert.False(processSpec.KillEntireProcessTree);
-        Assert.Equal(7, processSpec.RetainedOutputLineCount);
+        var processCommand = Assert.Single(processRunner.Commands);
+        Assert.Equal("factory-command-executable", processCommand.ExecutablePath);
+        Assert.Equal(["--message", "hello-from-factory"], processCommand.Arguments);
+        Assert.Equal("/test/factory-working-directory", processCommand.WorkingDirectory);
+        Assert.Equal("hello-from-factory", processCommand.EnvironmentVariables["PROCESS_COMMAND_FACTORY_VALUE"]);
+        Assert.False(processCommand.InheritEnvironmentVariables);
+        Assert.Equal("from-factory-stdin", Encoding.UTF8.GetString(processCommand.Input!.Bytes.Span));
+        Assert.False(processCommand.KillEntireProcessTree);
     }
 
     [Fact]
@@ -335,7 +335,7 @@ public class WithProcessCommandTests(ITestOutputHelper testOutputHelper)
 
         Assert.False(result.Success);
         Assert.Contains("factory returned null", result.Message);
-        Assert.Empty(processRunner.ProcessSpecs);
+        Assert.Empty(processRunner.Commands);
     }
 
     [Fact]
@@ -392,8 +392,8 @@ public class WithProcessCommandTests(ITestOutputHelper testOutputHelper)
         Assert.Equal("hello-from-argument", capturedContext.Arguments.GetString("message"));
         Assert.NotNull(capturedContext.Logger);
 
-        var processSpec = Assert.Single(processRunner.ProcessSpecs);
-        Assert.Equal(["hello-from-argument"], processSpec.ArgumentList);
+        var processCommand = Assert.Single(processRunner.Commands);
+        Assert.Equal(["hello-from-argument"], processCommand.Arguments);
     }
 
     [Fact]
@@ -453,8 +453,8 @@ public class WithProcessCommandTests(ITestOutputHelper testOutputHelper)
         Assert.Equal("received argument", response.Message);
         Assert.Equal("hello-from-backchannel", response.Value?.Value);
 
-        var processSpec = Assert.Single(processRunner.ProcessSpecs);
-        Assert.Equal(["--message", "hello-from-backchannel"], processSpec.ArgumentList);
+        var processCommand = Assert.Single(processRunner.Commands);
+        Assert.Equal(["--message", "hello-from-backchannel"], processCommand.Arguments);
 
         Assert.NotNull(capturedResultContext);
         Assert.Equal("hello-from-backchannel", capturedResultContext.Arguments.GetString("message"));
@@ -490,8 +490,8 @@ public class WithProcessCommandTests(ITestOutputHelper testOutputHelper)
         Assert.True(result.Success);
         Assert.True(factoryAwaited);
         Assert.Contains("async-factory-output", result.Data?.Value);
-        var processSpec = Assert.Single(processRunner.ProcessSpecs);
-        Assert.Equal(["from-async-factory"], processSpec.ArgumentList);
+        var processCommand = Assert.Single(processRunner.Commands);
+        Assert.Equal(["from-async-factory"], processCommand.Arguments);
     }
 
     [Fact]
@@ -530,16 +530,16 @@ public class WithProcessCommandTests(ITestOutputHelper testOutputHelper)
         Assert.Contains("second-output", secondResult.Data?.Value);
 
         Assert.Collection(
-            processRunner.ProcessSpecs,
-            processSpec =>
+            processRunner.Commands,
+            processCommand =>
             {
-                Assert.Equal("test-command-1", processSpec.ExecutablePath);
-                Assert.Equal(["arg-1"], processSpec.ArgumentList);
+                Assert.Equal("test-command-1", processCommand.ExecutablePath);
+                Assert.Equal(["arg-1"], processCommand.Arguments);
             },
-            processSpec =>
+            processCommand =>
             {
-                Assert.Equal("test-command-2", processSpec.ExecutablePath);
-                Assert.Equal(["arg-2"], processSpec.ArgumentList);
+                Assert.Equal("test-command-2", processCommand.ExecutablePath);
+                Assert.Equal(["arg-2"], processCommand.Arguments);
             });
     }
 
@@ -547,7 +547,7 @@ public class WithProcessCommandTests(ITestOutputHelper testOutputHelper)
     public async Task WithProcessCommand_ReturnsBoundedOutput()
     {
         var processRunner = new TestProcessRunner();
-        processRunner.EnqueueResult(output: ["line-3", "line-4", "line-5"], totalOutputLineCount: 5);
+        processRunner.EnqueueResult(output: ["line-1", "line-2", "line-3", "line-4", "line-5"]);
         using var builder = CreateTestDistributedApplicationBuilder(processRunner);
 
         var resource = builder.AddResource(new CustomResource("resource"))
@@ -574,6 +574,61 @@ public class WithProcessCommandTests(ITestOutputHelper testOutputHelper)
         Assert.DoesNotContain("line-2", result.Data.Value);
         Assert.Contains("line-3", result.Data.Value);
         Assert.Contains("line-5", result.Data.Value);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task WithProcessCommand_IgnoresEmptyLinesButRetainsWhitespaceInBoundedOutput(bool isError)
+    {
+        const int maxLines = 2;
+        string[] lines = ["first", "", " \t", "last", ""];
+        Assert.Equal(2, lines.Count(string.IsNullOrEmpty));
+        Assert.Equal(3, lines.Count(line => !string.IsNullOrEmpty(line)));
+        Assert.True(lines.Count(line => !string.IsNullOrEmpty(line)) > maxLines);
+
+        var processRunner = new TestProcessRunner();
+        processRunner.EnqueueResult(outputEvents: lines.Select(line => new TestProcessOutput(isError, line)).ToArray());
+        using var builder = CreateTestDistributedApplicationBuilder(processRunner);
+
+        ProcessCommandResultContext? capturedContext = null;
+        var resource = builder.AddResource(new CustomResource("resource"))
+            .WithProcessCommand(
+                "empty-lines",
+                "Empty lines",
+                _ => CreateProcessCommandSpec(),
+                new ProcessCommandOptions
+                {
+                    MaxOutputLineCount = maxLines,
+                    GetCommandResult = context =>
+                    {
+                        capturedContext = context;
+                        return Task.FromResult(new ExecuteCommandResult
+                        {
+                            Success = true,
+                            Data = new CommandResultData
+                            {
+                                Value = context.GetFormattedOutput(maxLines),
+                                Format = CommandResultFormat.Text
+                            }
+                        });
+                    }
+                });
+
+        using var app = builder.Build();
+        await app.StartAsync().DefaultTimeout();
+        Assert.Null(capturedContext);
+        Assert.Empty(processRunner.Commands);
+
+        var result = await app.ResourceCommands.ExecuteCommandAsync(resource.Resource, "empty-lines").DefaultTimeout();
+
+        Assert.True(result.Success);
+        Assert.NotNull(capturedContext);
+        Assert.Equal([" \t", "last"], capturedContext.Output);
+        Assert.Equal(3, capturedContext.TotalOutputLineCount);
+        Assert.Equal(
+            string.Join(Environment.NewLine, "Command output truncated: showing last 2 of 3 lines.", " \t", "last"),
+            result.Data?.Value);
     }
 
     [Fact]
@@ -898,13 +953,76 @@ public class WithProcessCommandTests(ITestOutputHelper testOutputHelper)
         var result = await app.ResourceCommands.ExecuteCommandAsync(resource.Resource, "argument-fidelity").DefaultTimeout();
 
         Assert.True(result.Success);
-        var processSpec = Assert.Single(processRunner.ProcessSpecs);
-        Assert.Equal(expectedArguments, processSpec.ArgumentList);
-        Assert.Null(processSpec.Arguments);
+        var processCommand = Assert.Single(processRunner.Commands);
+        Assert.Equal(expectedArguments, processCommand.Arguments);
+    }
+
+    [Theory]
+    [InlineData(null, false)]
+    [InlineData(null, true)]
+    [InlineData("", false)]
+    [InlineData("", true)]
+    [InlineData("ü\0日本語\r\nno-final-newline", false)]
+    [InlineData("ü\0日本語\r\nno-final-newline", true)]
+    public async Task WithProcessCommand_PreservesInputAndExecutionSettings(string? input, bool inheritEnvironment)
+    {
+        using var workspace = TemporaryWorkspace.Create(testOutputHelper);
+        Assert.NotNull(Environment.GetEnvironmentVariable("PATH"));
+        var markerPath = Path.Combine(workspace.Path, "working-directory");
+        Assert.False(File.Exists(markerPath));
+        var marker = Guid.NewGuid().ToString("N");
+        await File.WriteAllTextAsync(markerPath, marker, TestContext.Current.CancellationToken);
+        var source = DotnetFileAppProcess.WriteApp(workspace.Path, "command.cs", """
+            #:sdk Microsoft.NET.Sdk
+            #:property TargetFramework=net10.0
+            using System.Text;
+            if (Environment.Version.Major != 10) { throw new Exception("The child must run on .NET 10."); }
+            using var input = new MemoryStream();
+            await Console.OpenStandardInput().CopyToAsync(input);
+            string[] output =
+            [
+                "directory:" + File.ReadAllText("working-directory"),
+                "environment:" + Environment.GetEnvironmentVariable("PROCESS_COMMAND_TEST_VALUE"),
+                "inherited:" + (Environment.GetEnvironmentVariable("PATH") is not null),
+                "argument:" + args[0],
+                "empty:" + args[1].Length,
+                "input:" + Convert.ToBase64String(input.ToArray())
+            ];
+            await Console.OpenStandardOutput().WriteAsync(Encoding.UTF8.GetBytes(string.Join("\n", output)));
+            """);
+        var outputDirectory = Path.Combine(workspace.Path, "compiled");
+        var build = await new DefaultProcessRunner().CreateExecution(new ProcessCommand(DotnetFileAppProcess.ResolvedExecutablePath)
+        {
+            Arguments = ["build", source, "--output", outputDirectory, "--nologo", "--verbosity", "quiet"]
+        }).DecodeText(Encoding.UTF8).ExecuteAndCaptureTextAsync(TestContext.Current.CancellationToken);
+        Assert.True(build.ExitCode == 0, build.StandardOutput + build.StandardError);
+        var child = Path.Combine(outputDirectory, "command.dll");
+        Assert.True(File.Exists(child));
+        using var builder = CreateTestDistributedApplicationBuilder(new DefaultProcessRunner());
+        var resource = builder.AddResource(new CustomResource("resource"))
+            .WithProcessCommand("real-process", "Real process", _ => new ProcessCommandSpec(DotnetFileAppProcess.ResolvedExecutablePath)
+            {
+                Arguments = [child, "space \"ü\" value", ""],
+                WorkingDirectory = workspace.Path,
+                EnvironmentVariables = new Dictionary<string, string> { ["PROCESS_COMMAND_TEST_VALUE"] = "ü" },
+                InheritEnvironmentVariables = inheritEnvironment,
+                StandardInputContent = input
+            });
+        using var app = builder.Build();
+        await app.StartAsync().DefaultTimeout();
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        cancellation.CancelAfter(TestConstants.LongTimeoutDuration);
+
+        var result = await app.ResourceCommands.ExecuteCommandAsync(resource.Resource, "real-process", cancellation.Token).DefaultTimeout(TestConstants.LongTimeoutDuration);
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(string.Join(Environment.NewLine,
+            "directory:" + marker, "environment:ü", "inherited:" + inheritEnvironment,
+            "argument:space \"ü\" value", "empty:0", "input:" + Convert.ToBase64String(Encoding.UTF8.GetBytes(input ?? ""))), result.Data?.Value);
     }
 
     [Fact]
-    public async Task WithProcessCommand_StandardInputContent_FlowsToProcessSpec()
+    public async Task WithProcessCommand_StandardInputContent_FlowsToProcessCommand()
     {
         var processRunner = new TestProcessRunner();
         processRunner.EnqueueResult();
@@ -922,8 +1040,8 @@ public class WithProcessCommandTests(ITestOutputHelper testOutputHelper)
         var result = await app.ResourceCommands.ExecuteCommandAsync(resource.Resource, "stdin").DefaultTimeout();
 
         Assert.True(result.Success);
-        var processSpec = Assert.Single(processRunner.ProcessSpecs);
-        Assert.Equal("from-standard-input", processSpec.StandardInputContent);
+        var processCommand = Assert.Single(processRunner.Commands);
+        Assert.Equal("from-standard-input", Encoding.UTF8.GetString(processCommand.Input!.Bytes.Span));
     }
 
     [Fact]
@@ -945,13 +1063,13 @@ public class WithProcessCommandTests(ITestOutputHelper testOutputHelper)
         var result = await app.ResourceCommands.ExecuteCommandAsync(resource.Resource, "path-executable").DefaultTimeout();
 
         Assert.True(result.Success);
-        var processSpec = Assert.Single(processRunner.ProcessSpecs);
-        Assert.Equal("test-command-name", processSpec.ExecutablePath);
-        Assert.True(processSpec.ResolveExecutablePath);
+        var processCommand = Assert.Single(processRunner.Commands);
+        Assert.Equal("test-command-name", processCommand.ExecutablePath);
+        Assert.True(processCommand.ResolveExecutablePath);
     }
 
     [Fact]
-    public async Task WithProcessCommand_WorkingDirectory_FlowsToProcessSpec()
+    public async Task WithProcessCommand_WorkingDirectory_FlowsToProcessCommand()
     {
         var processRunner = new TestProcessRunner();
         processRunner.EnqueueResult();
@@ -969,12 +1087,12 @@ public class WithProcessCommandTests(ITestOutputHelper testOutputHelper)
         var result = await app.ResourceCommands.ExecuteCommandAsync(resource.Resource, "working-directory").DefaultTimeout();
 
         Assert.True(result.Success);
-        var processSpec = Assert.Single(processRunner.ProcessSpecs);
-        Assert.Equal("/test/working-directory", processSpec.WorkingDirectory);
+        var processCommand = Assert.Single(processRunner.Commands);
+        Assert.Equal("/test/working-directory", processCommand.WorkingDirectory);
     }
 
     [Fact]
-    public async Task WithProcessCommand_EnvironmentVariables_FlowToProcessSpec()
+    public async Task WithProcessCommand_EnvironmentVariables_FlowToProcessCommand()
     {
         var processRunner = new TestProcessRunner();
         processRunner.EnqueueResult();
@@ -997,8 +1115,8 @@ public class WithProcessCommandTests(ITestOutputHelper testOutputHelper)
         var result = await app.ResourceCommands.ExecuteCommandAsync(resource.Resource, "environment").DefaultTimeout();
 
         Assert.True(result.Success);
-        var processSpec = Assert.Single(processRunner.ProcessSpecs);
-        Assert.Equal("from-environment", processSpec.EnvironmentVariables["PROCESS_COMMAND_TEST_VALUE"]);
+        var processCommand = Assert.Single(processRunner.Commands);
+        Assert.Equal("from-environment", processCommand.EnvironmentVariables["PROCESS_COMMAND_TEST_VALUE"]);
     }
 
     [Fact]
@@ -1024,7 +1142,7 @@ public class WithProcessCommandTests(ITestOutputHelper testOutputHelper)
 
         Assert.False(result.Success);
         Assert.Contains("environment variables require non-empty names", result.Message);
-        Assert.Empty(processRunner.ProcessSpecs);
+        Assert.Empty(processRunner.Commands);
     }
 
     [Fact]
@@ -1050,11 +1168,11 @@ public class WithProcessCommandTests(ITestOutputHelper testOutputHelper)
 
         Assert.False(result.Success);
         Assert.Contains("environment variable 'PROCESS_COMMAND_TEST_VALUE' requires a value", result.Message);
-        Assert.Empty(processRunner.ProcessSpecs);
+        Assert.Empty(processRunner.Commands);
     }
 
     [Fact]
-    public async Task WithProcessCommandExport_ProcessOptionsFlowToProcessSpec()
+    public async Task WithProcessCommandExport_ProcessOptionsFlowToProcessCommand()
     {
         var processRunner = new TestProcessRunner();
         processRunner.EnqueueResult(output: ["export-options-output"]);
@@ -1091,15 +1209,14 @@ public class WithProcessCommandTests(ITestOutputHelper testOutputHelper)
         Assert.False(result.Data.DisplayImmediately);
         Assert.Contains("export-options-output", result.Data.Value);
 
-        var processSpec = Assert.Single(processRunner.ProcessSpecs);
-        Assert.Equal("export-executable", processSpec.ExecutablePath);
-        Assert.Equal(["--from-export"], processSpec.ArgumentList);
-        Assert.Equal("/test/export-working-directory", processSpec.WorkingDirectory);
-        Assert.Equal("from-export-environment", processSpec.EnvironmentVariables["PROCESS_COMMAND_EXPORT_VALUE"]);
-        Assert.False(processSpec.InheritEnv);
-        Assert.Equal("from-export-stdin", processSpec.StandardInputContent);
-        Assert.False(processSpec.KillEntireProcessTree);
-        Assert.Equal(10, processSpec.RetainedOutputLineCount);
+        var processCommand = Assert.Single(processRunner.Commands);
+        Assert.Equal("export-executable", processCommand.ExecutablePath);
+        Assert.Equal(["--from-export"], processCommand.Arguments);
+        Assert.Equal("/test/export-working-directory", processCommand.WorkingDirectory);
+        Assert.Equal("from-export-environment", processCommand.EnvironmentVariables["PROCESS_COMMAND_EXPORT_VALUE"]);
+        Assert.False(processCommand.InheritEnvironmentVariables);
+        Assert.Equal("from-export-stdin", Encoding.UTF8.GetString(processCommand.Input!.Bytes.Span));
+        Assert.False(processCommand.KillEntireProcessTree);
     }
 
     [Fact]
@@ -1151,9 +1268,9 @@ public class WithProcessCommandTests(ITestOutputHelper testOutputHelper)
 
         Assert.True(result.Success);
 
-        var processSpec = Assert.Single(processRunner.ProcessSpecs);
-        Assert.True(processSpec.InheritEnv);
-        Assert.True(processSpec.KillEntireProcessTree);
+        var processCommand = Assert.Single(processRunner.Commands);
+        Assert.True(processCommand.InheritEnvironmentVariables);
+        Assert.True(processCommand.KillEntireProcessTree);
     }
 
     [Fact]
@@ -1214,7 +1331,7 @@ public class WithProcessCommandTests(ITestOutputHelper testOutputHelper)
 
             Assert.False(result.Success);
             Assert.Contains(expectedMessage, result.Message);
-            Assert.Empty(processRunner.ProcessSpecs);
+            Assert.Empty(processRunner.Commands);
         }
     }
 
@@ -1284,8 +1401,26 @@ public class WithProcessCommandTests(ITestOutputHelper testOutputHelper)
         var result = await app.ResourceCommands.ExecuteCommandAsync(resource.Resource, "environment-inheritance").DefaultTimeout();
 
         Assert.True(result.Success);
-        var processSpec = Assert.Single(processRunner.ProcessSpecs);
-        Assert.False(processSpec.InheritEnv);
+        var processCommand = Assert.Single(processRunner.Commands);
+        Assert.False(processCommand.InheritEnvironmentVariables);
+    }
+
+    [Fact]
+    public async Task WithProcessCommand_MissingExitCode_ReturnsFailure()
+    {
+        var processRunner = new TestProcessRunner();
+        processRunner.EnqueueResult(exitCode: null);
+        using var builder = CreateTestDistributedApplicationBuilder(processRunner);
+        var resource = builder.AddResource(new CustomResource("resource"))
+            .WithProcessCommand("missing-exit", "Missing exit", _ => CreateProcessCommandSpec());
+        using var app = builder.Build();
+        await app.StartAsync().DefaultTimeout();
+
+        var result = await app.ResourceCommands.ExecuteCommandAsync(resource.Resource, "missing-exit").DefaultTimeout();
+
+        Assert.False(result.Success);
+        Assert.False(result.Canceled);
+        Assert.Equal("The process event stream completed without an exit code.", result.Message);
     }
 
     [Fact]
@@ -1316,7 +1451,7 @@ public class WithProcessCommandTests(ITestOutputHelper testOutputHelper)
     public async Task WithProcessCommand_ProcessTaskFailure_ReturnsFailureAndDisposesProcess()
     {
         var processRunner = new TestProcessRunner();
-        processRunner.EnqueuePending(Task.FromException<ProcessResult>(new InvalidOperationException("process failed after start")));
+        processRunner.EnqueuePending(Task.FromException<int>(new InvalidOperationException("process failed after start")));
         using var builder = CreateTestDistributedApplicationBuilder(processRunner);
 
         var resource = builder.AddResource(new CustomResource("resource"))
@@ -1381,7 +1516,7 @@ public class WithProcessCommandTests(ITestOutputHelper testOutputHelper)
 
         Assert.False(result.Success);
         Assert.Equal("factory failed", result.Message);
-        Assert.Empty(processRunner.ProcessSpecs);
+        Assert.Empty(processRunner.Commands);
     }
 
     [Fact]
@@ -1443,7 +1578,7 @@ public class WithProcessCommandTests(ITestOutputHelper testOutputHelper)
 
         Assert.False(result.Success);
         Assert.False(processSpecFactoryCalled);
-        Assert.Empty(processRunner.ProcessSpecs);
+        Assert.Empty(processRunner.Commands);
         Assert.Equal("Command argument validation failed.", result.Message);
         Assert.NotNull(result.InvalidArguments);
         var invalidArgument = Assert.Single(result.InvalidArguments);
@@ -1455,8 +1590,8 @@ public class WithProcessCommandTests(ITestOutputHelper testOutputHelper)
     public async Task WithProcessCommand_Cancellation_ReturnsCanceledResultAndDisposesProcess()
     {
         var processRunner = new TestProcessRunner();
-        var pendingProcessResult = new TaskCompletionSource<ProcessResult>(TaskCreationOptions.RunContinuationsAsynchronously);
-        processRunner.EnqueuePending(pendingProcessResult.Task);
+        var pendingExitCode = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        processRunner.EnqueuePending(pendingExitCode.Task);
         using var builder = CreateTestDistributedApplicationBuilder(processRunner);
 
         var resource = builder.AddResource(new CustomResource("resource"))
@@ -1482,12 +1617,25 @@ public class WithProcessCommandTests(ITestOutputHelper testOutputHelper)
         Assert.Equal(1, disposable.DisposeCallCount);
     }
 
-    private IDistributedApplicationTestingBuilder CreateTestDistributedApplicationBuilder(TestProcessRunner? processRunner = null)
+    private IDistributedApplicationTestingBuilder CreateTestDistributedApplicationBuilder(IProcessRunner? processRunner = null)
     {
         var builder = TestDistributedApplicationBuilder.Create(testOutputHelper);
-        builder.Services.AddSingleton<IProcessRunner>(processRunner ?? new TestProcessRunner());
+        builder.Services.AddSingleton<IProcessRunner>(services => new ResourceCommandTestRunner(
+            processRunner ?? new TestProcessRunner(),
+            services.GetRequiredService<IOptions<DcpOptions>>().Value.CliPath));
 
         return builder;
+    }
+
+    private sealed class ResourceCommandTestRunner(IProcessRunner commandRunner, string? dcpPath) : IProcessRunner
+    {
+        private readonly IProcessRunner _dcpRunner = new DefaultProcessRunner();
+
+        public (Task<ProcessResult>, IAsyncDisposable) Run(ProcessSpec processSpec) => throw new NotSupportedException();
+
+        public IAsyncEnumerable<ProcessEvent<ReadOnlyMemory<byte>>> CreateExecution(ProcessCommand command)
+            // DCP startup must not consume the resource command's scripted result.
+            => (command.ExecutablePath == dcpPath ? _dcpRunner : commandRunner).CreateExecution(command);
     }
 
     private static ProcessCommandSpec CreateProcessCommandSpec(

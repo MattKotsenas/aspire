@@ -3673,21 +3673,36 @@ public static class ResourceBuilderExtensions
 
     internal static async Task<ExecuteCommandResult> ExecuteProcessCommandAsync(ExecuteCommandContext context, ProcessCommandSpec processCommandSpec, ProcessCommandOptions commandOptions)
     {
-        var processSpec = CreateProcessSpec(context, processCommandSpec, commandOptions);
+        var command = CreateProcessCommand(processCommandSpec);
         var processRunner = context.Services.GetRequiredService<IProcessRunner>();
-        var (pendingProcessResult, processDisposable) = processRunner.Run(processSpec);
-
-        await using (processDisposable.ConfigureAwait(false))
+        var output = new ProcessOutputCapture(commandOptions.MaxOutputLineCount);
+        try
         {
-            try
-            {
-                var processResult = await pendingProcessResult.WaitAsync(context.CancellationToken).ConfigureAwait(false);
-                return await GetProcessCommandResultAsync(context, processCommandSpec, processResult, commandOptions).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
-            {
-                return CommandResults.Canceled();
-            }
+            var exitCode = await processRunner.CreateExecution(command)
+                .DecodeText(Encoding.UTF8)
+                .ReadLines()
+                .OnStandardOutput(line =>
+                {
+                    if (!string.IsNullOrEmpty(line))
+                    {
+                        output.Add(line);
+                        context.Logger.LogDebug("{ExecutablePath} (stdout): {Output}", command.ExecutablePath, line);
+                    }
+                })
+                .OnStandardError(line =>
+                {
+                    if (!string.IsNullOrEmpty(line))
+                    {
+                        output.Add(line);
+                        context.Logger.LogDebug("{ExecutablePath} (stderr): {Error}", command.ExecutablePath, line);
+                    }
+                })
+                .ExecuteAsync(context.CancellationToken).ConfigureAwait(false);
+            return await GetProcessCommandResultAsync(context, processCommandSpec, exitCode, output, commandOptions).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
+        {
+            return CommandResults.Canceled();
         }
     }
 
@@ -3808,7 +3823,7 @@ public static class ResourceBuilderExtensions
         return result;
     }
 
-    private static ProcessSpec CreateProcessSpec(ExecuteCommandContext context, ProcessCommandSpec processCommandSpec, ProcessCommandOptions commandOptions)
+    private static ProcessCommand CreateProcessCommand(ProcessCommandSpec processCommandSpec)
     {
         var arguments = processCommandSpec.Arguments ?? [];
         foreach (var argument in arguments)
@@ -3833,23 +3848,19 @@ public static class ResourceBuilderExtensions
             }
         }
 
-        return new ProcessSpec(processCommandSpec.ExecutablePath)
+        return new ProcessCommand(processCommandSpec.ExecutablePath)
         {
             WorkingDirectory = processCommandSpec.WorkingDirectory,
-            ArgumentList = arguments,
+            Arguments = arguments,
             EnvironmentVariables = environmentVariables,
-            InheritEnv = processCommandSpec.InheritEnvironmentVariables,
-            StandardInputContent = processCommandSpec.StandardInputContent,
+            InheritEnvironmentVariables = processCommandSpec.InheritEnvironmentVariables,
+            Input = processCommandSpec.StandardInputContent is { } content ? ProcessInput.FromText(content, Encoding.UTF8) : null,
             KillEntireProcessTree = processCommandSpec.KillEntireProcessTree,
-            ThrowOnNonZeroReturnCode = false,
-            ResolveExecutablePath = true,
-            RetainedOutputLineCount = commandOptions.MaxOutputLineCount,
-            OnOutputData = output => context.Logger.LogDebug("{ExecutablePath} (stdout): {Output}", processCommandSpec.ExecutablePath, output),
-            OnErrorData = error => context.Logger.LogDebug("{ExecutablePath} (stderr): {Error}", processCommandSpec.ExecutablePath, error)
+            ResolveExecutablePath = true
         };
     }
 
-    private static async Task<ExecuteCommandResult> GetProcessCommandResultAsync(ExecuteCommandContext context, ProcessCommandSpec processCommandSpec, ProcessResult processResult, ProcessCommandOptions commandOptions)
+    private static async Task<ExecuteCommandResult> GetProcessCommandResultAsync(ExecuteCommandContext context, ProcessCommandSpec processCommandSpec, int exitCode, ProcessOutputCapture outputCapture, ProcessCommandOptions commandOptions)
     {
         if (commandOptions.GetCommandResult is { } getCommandResult)
         {
@@ -3861,20 +3872,15 @@ public static class ResourceBuilderExtensions
                 CancellationToken = context.CancellationToken,
                 Arguments = context.Arguments,
                 ProcessCommandSpec = processCommandSpec,
-                ExitCode = processResult.ExitCode,
-                Output = processResult.ProcessOutput,
-                TotalOutputLineCount = processResult.TotalProcessOutputLineCount
+                ExitCode = exitCode,
+                Output = outputCapture.ToArray(),
+                TotalOutputLineCount = outputCapture.TotalLineCount
             };
 
             return await getCommandResult(resultContext).ConfigureAwait(false);
         }
 
-        return GetDefaultProcessCommandResult(processCommandSpec.ExecutablePath, processResult, commandOptions);
-    }
-
-    internal static ExecuteCommandResult GetDefaultProcessCommandResult(string executablePath, ProcessResult processResult, ProcessCommandOptions commandOptions)
-    {
-        var formattedOutput = processResult.GetFormattedOutput(commandOptions.MaxOutputLineCount);
+        var formattedOutput = ProcessOutputCapture.FormatOutput(outputCapture.ToArray(), outputCapture.TotalLineCount, commandOptions.MaxOutputLineCount);
         var resultData = string.IsNullOrEmpty(formattedOutput)
             ? null
             : new CommandResultData
@@ -3890,14 +3896,14 @@ public static class ResourceBuilderExtensions
             throw new InvalidOperationException("Process command success exit codes must contain at least one value.");
         }
 
-        if (successExitCodes.Contains(processResult.ExitCode))
+        if (successExitCodes.Contains(exitCode))
         {
             return resultData is null
                 ? CommandResults.Success()
                 : new ExecuteCommandResult { Success = true, Data = resultData };
         }
 
-        var message = $"Command '{executablePath}' exited with code {processResult.ExitCode}, which is not in the configured success exit codes [{string.Join(", ", successExitCodes)}].";
+        var message = $"Command '{processCommandSpec.ExecutablePath}' exited with code {exitCode}, which is not in the configured success exit codes [{string.Join(", ", successExitCodes)}].";
 
         return resultData is null
             ? CommandResults.Failure(message)
