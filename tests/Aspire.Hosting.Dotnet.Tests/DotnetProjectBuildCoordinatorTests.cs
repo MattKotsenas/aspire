@@ -309,12 +309,12 @@ public class DotnetProjectBuildCoordinatorTests(ITestOutputHelper outputHelper)
         var buildEnvironment = await EnvironmentVariableEvaluator.GetEnvironmentVariablesAsync(
             buildResource,
             serviceProvider: app.Services);
-        var buildResult = await new DefaultProcessRunner().RunAndCaptureTextAsync(
-            buildResource.Command,
-            buildArguments,
-            buildResource.WorkingDirectory,
-            buildEnvironment,
-            cancellationToken: TestContext.Current.CancellationToken);
+        var buildResult = await new DefaultProcessRunner().CreateExecution(new ProcessCommand(buildResource.Command)
+        {
+            Arguments = buildArguments,
+            WorkingDirectory = buildResource.WorkingDirectory,
+            EnvironmentVariables = buildEnvironment
+        }).DecodeText(Encoding.UTF8).ExecuteAndCaptureTextAsync(TestContext.Current.CancellationToken);
 
         Assert.True(
             buildResult.ExitCode == 0,
