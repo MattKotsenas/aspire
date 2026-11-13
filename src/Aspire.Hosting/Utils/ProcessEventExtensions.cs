@@ -177,6 +177,120 @@ internal static class ProcessEventExtensions
     }
 
     /// <summary>
+    /// Reads CR, LF and CRLF lines, including empty lines and a final unterminated line at EOF.
+    /// </summary>
+    /// <param name="events">The decoded process events to frame into lines during consumption.</param>
+    /// <returns>A deferred stream of lines and lifecycle events, with each output flushed only at its own EOF.</returns>
+    /// <remarks>
+    /// Standard output and standard error are buffered independently. An unterminated line is buffered
+    /// without a size limit until a line delimiter or that stream's EOF, which can require substantial memory.
+    /// </remarks>
+    public static IAsyncEnumerable<ProcessEvent<string>> ReadLines(
+        this IAsyncEnumerable<ProcessEvent<ReadOnlyMemory<char>>> events)
+        => ReadLinesCore(events);
+
+    private static async IAsyncEnumerable<ProcessEvent<string>> ReadLinesCore(
+        IAsyncEnumerable<ProcessEvent<ReadOnlyMemory<char>>> events,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        var output = new LineBuffer();
+        var error = new LineBuffer();
+        var enumerator = events.GetAsyncEnumerator(cancellationToken);
+        Exception? failure = null;
+        try
+        {
+            while (true)
+            {
+                IEnumerator<ProcessEvent<string>> lines;
+                try
+                {
+                    if (!await enumerator.MoveNextAsync().ConfigureAwait(false))
+                    {
+                        break;
+                    }
+
+                    lines = Read(enumerator.Current, output, error).GetEnumerator();
+                }
+                catch (Exception exception)
+                {
+                    failure = exception;
+                    throw;
+                }
+
+                using (lines)
+                {
+                    while (true)
+                    {
+                        ProcessEvent<string> item;
+                        try
+                        {
+                            // Project lazily without a per-event array. Guard both iterator operations
+                            // so a framing failure survives disposal of the upstream event stream.
+                            if (!lines.MoveNext())
+                            {
+                                break;
+                            }
+
+                            item = lines.Current;
+                        }
+                        catch (Exception exception)
+                        {
+                            failure = exception;
+                            throw;
+                        }
+
+                        yield return item;
+                    }
+                }
+            }
+        }
+        finally
+        {
+            await DisposeAsync(enumerator, failure).ConfigureAwait(false);
+        }
+    }
+
+    private static IEnumerable<ProcessEvent<string>> Read(
+        ProcessEvent<ReadOnlyMemory<char>> item, LineBuffer output, LineBuffer error)
+    {
+        switch (item)
+        {
+            case ProcessEvent<ReadOnlyMemory<char>>.Started started:
+                yield return new ProcessEvent<string>.Started(started.ProcessId);
+                break;
+            case ProcessEvent<ReadOnlyMemory<char>>.StandardOutput data:
+                foreach (var line in output.Append(data.Content))
+                {
+                    yield return new ProcessEvent<string>.StandardOutput(line);
+                }
+                break;
+            case ProcessEvent<ReadOnlyMemory<char>>.StandardError data:
+                foreach (var line in error.Append(data.Content))
+                {
+                    yield return new ProcessEvent<string>.StandardError(line);
+                }
+                break;
+            case ProcessEvent<ReadOnlyMemory<char>>.StandardOutputCompleted:
+                if (output.Complete() is { } finalLine)
+                {
+                    yield return new ProcessEvent<string>.StandardOutput(finalLine);
+                }
+                yield return new ProcessEvent<string>.StandardOutputCompleted();
+                break;
+            case ProcessEvent<ReadOnlyMemory<char>>.StandardErrorCompleted:
+                if (error.Complete() is { } finalError)
+                {
+                    yield return new ProcessEvent<string>.StandardError(finalError);
+                }
+                yield return new ProcessEvent<string>.StandardErrorCompleted();
+                break;
+            case ProcessEvent<ReadOnlyMemory<char>>.Exited exited:
+                yield return new ProcessEvent<string>.Exited(exited.ExitCode);
+                break;
+        }
+    }
+
+    /// <summary>
     /// Drains events and awaits disposal before returning the known exit code, including nonzero exits.
     /// </summary>
     /// <typeparam name="T">The event payload type.</typeparam>
@@ -257,5 +371,36 @@ internal static class ProcessEventExtensions
         {
             throw new AggregateException(failure, cleanupFailure);
         }
+    }
+
+    private sealed class LineBuffer
+    {
+        private readonly StringBuilder _line = new();
+        private bool _afterCarriageReturn;
+
+        public IEnumerable<string> Append(ReadOnlyMemory<char> text)
+        {
+            for (var index = 0; index < text.Length; index++)
+            {
+                var value = text.Span[index];
+                var skip = _afterCarriageReturn && value == '\n';
+                _afterCarriageReturn = value == '\r';
+                if (skip)
+                {
+                    continue;
+                }
+                if (value is '\r' or '\n')
+                {
+                    yield return _line.ToString();
+                    _line.Clear();
+                }
+                else
+                {
+                    _line.Append(value);
+                }
+            }
+        }
+
+        public string? Complete() => _line.Length > 0 ? _line.ToString() : null;
     }
 }

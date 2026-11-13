@@ -600,19 +600,7 @@ public class WithProcessCommandTests(ITestOutputHelper testOutputHelper)
                 new ProcessCommandOptions
                 {
                     MaxOutputLineCount = maxLines,
-                    GetCommandResult = context =>
-                    {
-                        capturedContext = context;
-                        return Task.FromResult(new ExecuteCommandResult
-                        {
-                            Success = true,
-                            Data = new CommandResultData
-                            {
-                                Value = context.GetFormattedOutput(maxLines),
-                                Format = CommandResultFormat.Text
-                            }
-                        });
-                    }
+                    GetCommandResult = CaptureContextAndFormatOutput
                 });
 
         using var app = builder.Build();
@@ -629,6 +617,20 @@ public class WithProcessCommandTests(ITestOutputHelper testOutputHelper)
         Assert.Equal(
             string.Join(Environment.NewLine, "Command output truncated: showing last 2 of 3 lines.", " \t", "last"),
             result.Data?.Value);
+
+        Task<ExecuteCommandResult> CaptureContextAndFormatOutput(ProcessCommandResultContext context)
+        {
+            capturedContext = context;
+            return Task.FromResult(new ExecuteCommandResult
+            {
+                Success = true,
+                Data = new CommandResultData
+                {
+                    Value = context.GetFormattedOutput(maxLines),
+                    Format = CommandResultFormat.Text
+                }
+            });
+        }
     }
 
     [Fact]
@@ -999,15 +1001,22 @@ public class WithProcessCommandTests(ITestOutputHelper testOutputHelper)
         var child = Path.Combine(outputDirectory, "command.dll");
         Assert.True(File.Exists(child));
         using var builder = CreateTestDistributedApplicationBuilder(new DefaultProcessRunner());
-        var resource = builder.AddResource(new CustomResource("resource"))
-            .WithProcessCommand("real-process", "Real process", _ => new ProcessCommandSpec(DotnetFileAppProcess.ResolvedExecutablePath)
+
+        ProcessCommandSpec CreateInputAndSettingsSpec(ExecuteCommandContext _)
+        {
+            return new ProcessCommandSpec(DotnetFileAppProcess.ResolvedExecutablePath)
             {
                 Arguments = [child, "space \"ü\" value", ""],
                 WorkingDirectory = workspace.Path,
                 EnvironmentVariables = new Dictionary<string, string> { ["PROCESS_COMMAND_TEST_VALUE"] = "ü" },
                 InheritEnvironmentVariables = inheritEnvironment,
                 StandardInputContent = input
-            });
+            };
+        }
+
+        var resource = builder.AddResource(new CustomResource("resource"))
+            .WithProcessCommand("real-process", "Real process", CreateInputAndSettingsSpec);
+
         using var app = builder.Build();
         await app.StartAsync().DefaultTimeout();
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
