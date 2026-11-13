@@ -143,20 +143,22 @@ public class ProcessEventExtensionsTests
     [Theory]
     [InlineData("bytes")]
     [InlineData("text")]
+    [InlineData("lines")]
     public async Task ObserverAndCleanupFailuresSurviveComposition(string stage)
     {
         var observerFailure = new InvalidOperationException("Observation failed.");
         var cleanupFailure = new IOException("Disposal failed.");
         var source = new FailingEventStream(Encoding.UTF8.GetBytes("line\n"), cleanupFailure: cleanupFailure);
         Assert.Equal(0, source.DisposeCount);
-        var pipeline = stage switch
+        Task completion = stage switch
         {
-            "bytes" => source.OnStandardOutput(_ => throw observerFailure).DecodeText(Encoding.UTF8),
-            "text" => source.DecodeText(Encoding.UTF8).OnStandardOutput(_ => throw observerFailure),
+            "bytes" => source.OnStandardOutput(_ => throw observerFailure).DecodeText(Encoding.UTF8).ExecuteAsync(TestContext.Current.CancellationToken),
+            "text" => source.DecodeText(Encoding.UTF8).OnStandardOutput(_ => throw observerFailure).ExecuteAsync(TestContext.Current.CancellationToken),
+            "lines" => source.DecodeText(Encoding.UTF8).ReadLines().OnStandardOutput(_ => throw observerFailure).ExecuteAsync(TestContext.Current.CancellationToken),
             _ => throw new ArgumentOutOfRangeException(nameof(stage))
         };
 
-        var failure = await Assert.ThrowsAsync<AggregateException>(() => pipeline.ExecuteAsync(TestContext.Current.CancellationToken));
+        var failure = await Assert.ThrowsAsync<AggregateException>(() => completion);
 
         Assert.Equal([observerFailure, cleanupFailure], failure.Flatten().InnerExceptions);
         Assert.Equal(1, source.DisposeCount);
@@ -211,6 +213,38 @@ public class ProcessEventExtensionsTests
     }
 
     [Theory]
+    [InlineData("")]
+    [InlineData("\r\n\nA\rB\r\n日本語\0last")]
+    public async Task LinesDecodeSplitCharactersAndCrLfWithoutDroppingEmptyLines(string text)
+    {
+        var lines = new List<string>();
+        var completionCount = 0;
+        await foreach (var item in FragmentedEvents().DecodeText(Encoding.UTF8).ReadLines())
+        {
+            if (item is ProcessEvent<string>.StandardOutput output) { lines.Add(output.Content); }
+            if (item is ProcessEvent<string>.StandardOutputCompleted) { completionCount++; }
+        }
+        using var expected = new StringReader(text);
+        var expectedLines = new List<string>();
+        while (expected.ReadLine() is { } line) { expectedLines.Add(line); }
+        Assert.Equal(expectedLines, lines);
+        Assert.Equal(1, completionCount);
+
+        async IAsyncEnumerable<ProcessEvent<ReadOnlyMemory<byte>>> FragmentedEvents()
+        {
+            await Task.CompletedTask;
+            yield return new ProcessEvent<ReadOnlyMemory<byte>>.Started(1);
+            foreach (var value in Encoding.UTF8.GetBytes(text))
+            {
+                yield return new ProcessEvent<ReadOnlyMemory<byte>>.StandardOutput(new byte[] { value });
+            }
+            yield return new ProcessEvent<ReadOnlyMemory<byte>>.StandardOutputCompleted();
+            yield return new ProcessEvent<ReadOnlyMemory<byte>>.StandardErrorCompleted();
+            yield return new ProcessEvent<ReadOnlyMemory<byte>>.Exited(0);
+        }
+    }
+
+    [Theory]
     [InlineData(false, false)]
     [InlineData(true, false)]
     [InlineData(false, true)]
@@ -246,6 +280,7 @@ public class ProcessEventExtensionsTests
 
     [Theory]
     [InlineData("text")]
+    [InlineData("lines")]
     [InlineData("capture")]
     [InlineData("observer")]
     [InlineData("execute")]
@@ -258,6 +293,7 @@ public class ProcessEventExtensionsTests
         Func<Task> read = adapter switch
         {
             "text" => () => CollectAsync(source.DecodeText(Encoding.UTF8)),
+            "lines" => () => CollectAsync(source.DecodeText(Encoding.UTF8).ReadLines()),
             "capture" => () => source.DecodeText(Encoding.UTF8).ExecuteAndCaptureTextAsync(TestContext.Current.CancellationToken),
             "observer" => () => source.DecodeText(Encoding.UTF8).OnStandardOutput(_ => { }).ExecuteAsync(TestContext.Current.CancellationToken),
             "execute" => () => source.ExecuteAsync(TestContext.Current.CancellationToken),
