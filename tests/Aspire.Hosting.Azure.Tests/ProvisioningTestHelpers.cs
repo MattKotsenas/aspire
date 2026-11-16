@@ -5,12 +5,13 @@
 #pragma warning disable CS0618 // Type or member is obsolete
 
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Aspire.Hosting.Azure.Provisioning;
 using Aspire.Hosting.Azure.Provisioning.Internal;
-using Aspire.Hosting.Dcp.Process;
+using Aspire.Hosting.Utils;
 using Aspire.Hosting.Pipelines;
 using Aspire.Hosting.Publishing;
 using Azure;
@@ -1088,53 +1089,68 @@ internal sealed class TestTokenCredentialProvider(TokenCredential? credential = 
     public TokenCredential TokenCredential { get; } = credential ?? new TestTokenCredential();
 }
 
+internal sealed record MockProcessResult(int ExitCode, string StandardOutput, string StandardError);
+
 /// <summary>
 /// Mock implementation of IProcessRunner for testing that captures executed commands.
 /// </summary>
 internal sealed class MockProcessRunner : IProcessRunner
 {
-    /// <summary>
-    /// Gets the list of commands that were executed.
-    /// </summary>
-    public List<ExecutedCommand> ExecutedCommands { get; } = [];
+    public List<ProcessCommand> ExecutedCommands { get; } = [];
 
-    /// <summary>
-    /// Gets or sets the configured results for specific commands.
-    /// Key format: "{executablePath} {arguments}"
-    /// </summary>
-    public Dictionary<string, ProcessResult> CommandResults { get; set; } = [];
+    public Func<ProcessCommand, CancellationToken, Task<MockProcessResult>> RunAsync { get; set; }
+        = static (_, _) => Task.FromResult(new MockProcessResult(0, "", ""));
 
-    /// <summary>
-    /// Gets or sets the default process result to return when no specific result is configured.
-    /// </summary>
-    public ProcessResult DefaultResult { get; set; } = new(0);
+    // Select scripted events only when consumption starts. The real adapters still own
+    // cancellation, stream transfer, and disposal, rather than a whole-result fixture.
+    public Func<ProcessCommand, IAsyncEnumerable<ProcessEvent<ReadOnlyMemory<byte>>>>? CreateEvents { get; set; }
 
-    /// <summary>
-    /// Represents a command that was executed.
-    /// </summary>
-    public sealed record ExecutedCommand(string ExecutablePath, string? Arguments, string? WorkingDirectory);
+    public IAsyncEnumerable<ProcessEvent<ReadOnlyMemory<byte>>> CreateExecution(ProcessCommand command)
+        => new ExecutionEventStream(CreateEvents is { } createEvents
+            ? new DeferredScriptedEvents(() =>
+            {
+                ExecutedCommands.Add(command);
+                return createEvents(command);
+            })
+            : ReadEventsAsync(command));
 
-    public (Task<ProcessResult>, IAsyncDisposable) Run(ProcessSpec processSpec)
+    private async IAsyncEnumerable<ProcessEvent<ReadOnlyMemory<byte>>> ReadEventsAsync(
+        ProcessCommand command, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        // Capture the executed command
-        var executedCommand = new ExecutedCommand(processSpec.ExecutablePath, processSpec.Arguments, processSpec.WorkingDirectory);
-        ExecutedCommands.Add(executedCommand);
-
-        // Determine the result to return
-        var commandKey = $"{processSpec.ExecutablePath} {processSpec.Arguments ?? ""}".Trim();
-        var result = CommandResults.TryGetValue(commandKey, out var configuredResult) ? configuredResult : DefaultResult;
-
-        // Create a task that completes immediately with the configured result
-        var resultTask = Task.FromResult(result);
-
-        // Create a no-op disposable
-        var disposable = new NoOpAsyncDisposable();
-
-        return (resultTask, disposable);
+        cancellationToken.ThrowIfCancellationRequested();
+        ExecutedCommands.Add(command);
+        var result = await RunAsync(command, cancellationToken);
+        yield return new ProcessEvent<ReadOnlyMemory<byte>>.Started(ProcessId: 1);
+        yield return new ProcessEvent<ReadOnlyMemory<byte>>.StandardOutput(Encoding.UTF8.GetBytes(result.StandardOutput));
+        yield return new ProcessEvent<ReadOnlyMemory<byte>>.StandardError(Encoding.UTF8.GetBytes(result.StandardError));
+        yield return new ProcessEvent<ReadOnlyMemory<byte>>.StandardOutputCompleted();
+        yield return new ProcessEvent<ReadOnlyMemory<byte>>.StandardErrorCompleted();
+        yield return new ProcessEvent<ReadOnlyMemory<byte>>.Exited(result.ExitCode);
     }
 
-    private sealed class NoOpAsyncDisposable : IAsyncDisposable
+    // Forward the enumerator itself: an iterator's await foreach would allow a
+    // cleanup exception to replace a read exception before the adapters see it.
+    private sealed class DeferredScriptedEvents(Func<IAsyncEnumerable<ProcessEvent<ReadOnlyMemory<byte>>>> createEvents)
+        : IAsyncEnumerable<ProcessEvent<ReadOnlyMemory<byte>>>
     {
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        public IAsyncEnumerator<ProcessEvent<ReadOnlyMemory<byte>>> GetAsyncEnumerator(CancellationToken cancellationToken = default)
+            => new Enumerator(createEvents, cancellationToken);
+
+        private sealed class Enumerator(Func<IAsyncEnumerable<ProcessEvent<ReadOnlyMemory<byte>>>> createEvents, CancellationToken cancellationToken)
+            : IAsyncEnumerator<ProcessEvent<ReadOnlyMemory<byte>>>
+        {
+            private IAsyncEnumerator<ProcessEvent<ReadOnlyMemory<byte>>>? _source;
+
+            public ProcessEvent<ReadOnlyMemory<byte>> Current => _source!.Current;
+
+            public ValueTask<bool> MoveNextAsync()
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                _source ??= createEvents().GetAsyncEnumerator(cancellationToken);
+                return _source.MoveNextAsync();
+            }
+
+            public ValueTask DisposeAsync() => _source?.DisposeAsync() ?? ValueTask.CompletedTask;
+        }
     }
 }

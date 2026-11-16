@@ -2,6 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using Aspire.Hosting.Dcp.Process;
+using Aspire.Hosting.Utils;
 
 namespace Aspire.Hosting.Tests.Utils;
 
@@ -9,8 +10,9 @@ internal sealed class TestProcessRunner : IProcessRunner
 {
     private readonly object _lock = new();
     private readonly Queue<TestProcessRun> _runs = [];
-    private readonly List<ProcessSpec> _processSpecs = [];
     private readonly List<TestProcessDisposable> _disposables = [];
+
+    private readonly List<ProcessSpec> _processSpecs = [];
 
     public IReadOnlyList<ProcessSpec> ProcessSpecs
     {
@@ -23,6 +25,8 @@ internal sealed class TestProcessRunner : IProcessRunner
         }
     }
 
+    public Action<ProcessSpec>? RunCallback { get; set; }
+
     public IReadOnlyList<TestProcessDisposable> Disposables
     {
         get
@@ -34,12 +38,10 @@ internal sealed class TestProcessRunner : IProcessRunner
         }
     }
 
-    public TaskCompletionSource<ProcessSpec> RunStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-    public Action<ProcessSpec>? RunCallback { get; set; }
+    public TaskCompletionSource RunStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     public void EnqueueResult(
-        int exitCode = 0,
+        int? exitCode = 0,
         IReadOnlyList<string>? output = null,
         IReadOnlyList<string>? error = null,
         int? totalOutputLineCount = null,
@@ -47,7 +49,7 @@ internal sealed class TestProcessRunner : IProcessRunner
     {
         lock (_lock)
         {
-            _runs.Enqueue(TestProcessRun.Result(exitCode, output, error, totalOutputLineCount, outputEvents));
+            _runs.Enqueue(TestProcessRun.Result(exitCode, output, error, outputEvents) with { TotalOutputLineCount = totalOutputLineCount });
         }
     }
 
@@ -63,7 +65,7 @@ internal sealed class TestProcessRunner : IProcessRunner
     {
         lock (_lock)
         {
-            _runs.Enqueue(TestProcessRun.Pending(processResult));
+            _runs.Enqueue(TestProcessRun.Result() with { PendingResult = processResult });
         }
     }
 
@@ -91,7 +93,7 @@ internal sealed class TestProcessRunner : IProcessRunner
         }
 
         RunCallback?.Invoke(processSpec);
-        RunStarted.TrySetResult(processSpec);
+        RunStarted.TrySetResult();
 
         if (run.FailureException is { } exception)
         {
@@ -122,23 +124,28 @@ internal sealed class TestProcessRunner : IProcessRunner
             processOutput = processOutput.TakeLast(retainedOutputLineCount).ToArray();
         }
 
-        var processResult = new ProcessResult(run.ExitCode, processOutput, totalOutputLineCount);
+        var processResult = new ProcessResult(run.ExitCode ?? throw new InvalidOperationException("Legacy test execution requires a known exit code."), processOutput, totalOutputLineCount);
 
         return (Task.FromResult(processResult), disposable);
     }
 
+    // Event execution is added with this fake's first event-based business caller.
+    public IAsyncEnumerable<ProcessEvent<ReadOnlyMemory<byte>>> CreateExecution(ProcessCommand command)
+        => throw new NotSupportedException();
+
     private sealed record TestProcessRun(
-        int ExitCode,
+        int? ExitCode,
         IReadOnlyList<TestProcessOutput> OutputEvents,
-        int? TotalOutputLineCount,
-        Exception? FailureException,
-        Task<ProcessResult>? PendingResult)
+        Exception? FailureException)
     {
+        public Task<ProcessResult>? PendingResult { get; init; }
+
+        public int? TotalOutputLineCount { get; init; }
+
         public static TestProcessRun Result(
-            int exitCode = 0,
+            int? exitCode = 0,
             IReadOnlyList<string>? output = null,
             IReadOnlyList<string>? error = null,
-            int? totalOutputLineCount = null,
             IReadOnlyList<TestProcessOutput>? outputEvents = null)
         {
             outputEvents ??=
@@ -147,14 +154,11 @@ internal sealed class TestProcessRunner : IProcessRunner
                 .. (error ?? Array.Empty<string>()).Select(static value => new TestProcessOutput(IsError: true, Value: value))
             ];
 
-            return new TestProcessRun(exitCode, outputEvents, totalOutputLineCount, null, null);
+            return new TestProcessRun(exitCode, outputEvents, null);
         }
 
         public static TestProcessRun Failed(Exception exception)
-            => new(0, [], null, exception, null);
-
-        public static TestProcessRun Pending(Task<ProcessResult> pendingResult)
-            => new(0, [], null, null, pendingResult);
+            => new(0, [], exception);
     }
 }
 

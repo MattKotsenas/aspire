@@ -1,9 +1,8 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System.Diagnostics;
 using System.Text;
-using Aspire.Hosting.Dcp.Process;
+using Aspire.Hosting.Utils;
 using Microsoft.Extensions.Logging;
 
 namespace Aspire.Hosting.Azure.Provisioning.Internal;
@@ -11,103 +10,87 @@ namespace Aspire.Hosting.Azure.Provisioning.Internal;
 /// <summary>
 /// Default implementation of <see cref="IBicepCompiler"/>.
 /// </summary>
-internal sealed class BicepCliCompiler : IBicepCompiler
+internal sealed class BicepCliCompiler(ILogger<BicepCliCompiler> logger, IProcessRunner processRunner) : IBicepCompiler
 {
-    private readonly ILogger<BicepCliCompiler> _logger;
-
-    public BicepCliCompiler(ILogger<BicepCliCompiler> logger)
-    {
-        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-    }
-
     public async Task<string> CompileBicepToArmAsync(string bicepFilePath, CancellationToken cancellationToken = default)
     {
-        // Try bicep command first for better performance
-        var bicepPath = PathLookupHelper.FindFullPathFromPath("bicep");
-        string commandPath;
-        string arguments;
-
-        if (bicepPath is not null)
+        try
         {
-            commandPath = bicepPath;
-            arguments = $"build \"{bicepFilePath}\" --stdout";
+            return await CompileAsync("bicep", ["build", bicepFilePath, "--stdout"], bicepFilePath, cancellationToken).ConfigureAwait(false);
         }
-        else
+        catch (FileNotFoundException exception) when (exception.FileName == "bicep")
         {
-            // Fall back to az bicep if bicep command is not available
-            var azPath = PathLookupHelper.FindFullPathFromPath("az");
-            if (azPath is null)
+            try
+            {
+                return await CompileAsync("az", ["bicep", "build", "--file", bicepFilePath, "--stdout"], bicepFilePath, cancellationToken).ConfigureAwait(false);
+            }
+            catch (FileNotFoundException azException) when (azException.FileName == "az")
             {
                 throw new AzureCliNotOnPathException();
             }
-            commandPath = azPath;
-            arguments = $"bicep build --file \"{bicepFilePath}\" --stdout";
         }
-
-        var armTemplateContents = new StringBuilder();
-        var errorContents = new StringBuilder();
-        var templateSpec = new ProcessSpec(commandPath)
-        {
-            Arguments = arguments,
-            OnOutputData = data =>
-            {
-                _logger.LogDebug("{CommandPath} (stdout): {Output}", commandPath, data);
-                armTemplateContents.AppendLine(data);
-            },
-            OnErrorData = data =>
-            {
-                _logger.LogDebug("{CommandPath} (stderr): {Error}", commandPath, data);
-                errorContents.AppendLine(data);
-            },
-        };
-
-        _logger.LogDebug("Running {CommandPath} with arguments: {Arguments}", commandPath, arguments);
-
-        int exitCode;
-        try
-        {
-            exitCode = await ExecuteCommand(templateSpec).ConfigureAwait(false);
-        }
-        catch (InvalidOperationException ex)
-        {
-            var errorMessage = errorContents.ToString().Trim();
-            throw new InvalidOperationException(
-                string.IsNullOrEmpty(errorMessage)
-                    ? $"Failed to compile bicep file: {bicepFilePath}"
-                    : $"Failed to compile bicep file: {bicepFilePath}{Environment.NewLine}{errorMessage}",
-                ex);
-        }
-
-        if (exitCode != 0)
-        {
-            _logger.LogError("Bicep compilation for {BicepFilePath} failed with exit code {ExitCode}.", bicepFilePath, exitCode);
-            var errorMessage = errorContents.ToString().Trim();
-            throw new InvalidOperationException(
-                string.IsNullOrEmpty(errorMessage)
-                    ? $"Failed to compile bicep file: {bicepFilePath}"
-                    : $"Failed to compile bicep file: {bicepFilePath}{Environment.NewLine}{errorMessage}");
-        }
-
-        _logger.LogDebug("Bicep compilation for {BicepFilePath} succeeded.", bicepFilePath);
-
-        return armTemplateContents.ToString();
     }
 
-    private static async Task<int> ExecuteCommand(ProcessSpec processSpec)
+    private async Task<string> CompileAsync(string command, string[] arguments, string bicepFilePath, CancellationToken cancellationToken)
     {
-        var sw = Stopwatch.StartNew();
-        var (task, disposable) = ProcessUtil.Run(processSpec);
-
+        logger.LogDebug("Running {CommandPath} with arguments: {Arguments}", command, arguments);
+        var output = new StringBuilder();
+        var error = new StringBuilder();
+        var diagnostics = new ProcessOutputCapture(maxRetainedLineCount: 256);
         try
         {
-            var result = await task.ConfigureAwait(false);
-            sw.Stop();
+            // Capture decoded characters before framing removes line terminators. Observing
+            // framed lines in the same pass keeps diagnostics live even if execution fails.
+            var exitCode = await processRunner.CreateExecution(new ProcessCommand(command)
+            {
+                Arguments = arguments,
+                ResolveExecutablePath = true
+            })
+                .DecodeChars(Encoding.UTF8)
+                .AppendStandardOutput(output)
+                .AppendStandardError(error)
+                .FrameLines()
+                .OnStandardOutput(line =>
+                {
+                    if (line.Length > 0)
+                    {
+                        logger.LogDebug("{CommandPath} (stdout): {Output}", command, line);
+                        diagnostics.Add(line);
+                    }
+                })
+                .OnStandardError(line =>
+                {
+                    if (line.Length > 0)
+                    {
+                        logger.LogDebug("{CommandPath} (stderr): {Error}", command, line);
+                        diagnostics.Add(line);
+                    }
+                })
+                .ExecuteAsync(cancellationToken).ConfigureAwait(false);
 
-            return result.ExitCode;
+            // ExecuteAsync has drained and disposed the stream. A known nonzero exit is
+            // compilation policy, not a reason to interrupt process cleanup or try another tool.
+            if (exitCode != 0)
+            {
+                logger.LogError("Bicep compilation for {BicepFilePath} failed with exit code {ExitCode}.", bicepFilePath, exitCode);
+                var message = $"Command '{command}' with arguments [{string.Join(", ", arguments)}] failed with exit code {exitCode}.";
+                var tail = diagnostics.GetFormattedOutput();
+                throw new InvalidOperationException(string.IsNullOrEmpty(tail)
+                    ? message
+                    : $"{message}{Environment.NewLine}{tail}");
+            }
         }
-        finally
+        catch (InvalidOperationException exception)
         {
-            await disposable.DisposeAsync().ConfigureAwait(false);
+            // Only compilation/operation failures receive caller context. Preserve native
+            // failures and cancellation unchanged so PATH fallback and cancellation causes survive.
+            var errorMessage = error.ToString().Trim();
+            throw new InvalidOperationException(string.IsNullOrEmpty(errorMessage)
+                ? $"Failed to compile bicep file: {bicepFilePath}"
+                : $"Failed to compile bicep file: {bicepFilePath}{Environment.NewLine}{errorMessage}", exception);
         }
+
+        logger.LogDebug("Bicep compilation for {BicepFilePath} succeeded.", bicepFilePath);
+        return output.ToString();
     }
 }
