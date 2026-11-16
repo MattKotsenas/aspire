@@ -309,16 +309,21 @@ public class DotnetProjectBuildCoordinatorTests(ITestOutputHelper outputHelper)
         var buildEnvironment = await EnvironmentVariableEvaluator.GetEnvironmentVariablesAsync(
             buildResource,
             serviceProvider: app.Services);
-        var buildResult = await new DefaultProcessRunner().RunAndCaptureTextAsync(
-            buildResource.Command,
-            buildArguments,
-            buildResource.WorkingDirectory,
-            buildEnvironment,
-            cancellationToken: TestContext.Current.CancellationToken);
+        var standardOutput = new StringBuilder();
+        var standardError = new StringBuilder();
+        var exitCode = await new DefaultProcessRunner().CreateExecution(new ProcessCommand(buildResource.Command)
+        {
+            Arguments = buildArguments,
+            WorkingDirectory = buildResource.WorkingDirectory,
+            EnvironmentVariables = buildEnvironment
+        }).DecodeChars(Encoding.UTF8)
+            .AppendStandardOutput(standardOutput)
+            .AppendStandardError(standardError)
+            .ExecuteAsync(TestContext.Current.CancellationToken);
 
         Assert.True(
-            buildResult.ExitCode == 0,
-            $"{buildResult.StandardOutput}{Environment.NewLine}{buildResult.StandardError}");
+            exitCode == 0,
+            $"{standardOutput}{Environment.NewLine}{standardError}");
         Assert.True(File.Exists(Path.Combine(
             Path.GetDirectoryName(projectPath)!,
             "bin",

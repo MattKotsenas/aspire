@@ -29,15 +29,21 @@ internal sealed class GitPipelineOutputReader(string repositoryRoot, IProcessRun
     {
         try
         {
-            var result = await processRunner.RunAndCaptureTextAsync("git",
-                ["--no-optional-locks", "rev-parse", "--is-inside-work-tree", "--show-cdup"], directory,
-                s_environmentVariables, cancellationToken: cancellationToken).ConfigureAwait(false);
-            if (result.ExitCode != 0)
+            var standardOutput = new StringBuilder();
+            var exitCode = await processRunner.CreateExecution(new ProcessCommand("git")
+            {
+                Arguments = ["--no-optional-locks", "rev-parse", "--is-inside-work-tree", "--show-cdup"],
+                WorkingDirectory = directory,
+                EnvironmentVariables = s_environmentVariables
+            }).DecodeChars(Encoding.UTF8)
+                .AppendStandardOutput(standardOutput)
+                .ExecuteAsync(cancellationToken).ConfigureAwait(false);
+            if (exitCode != 0)
             {
                 return null;
             }
 
-            var output = result.StandardOutput.AsSpan();
+            var output = standardOutput.ToString().AsSpan();
             if (output.StartsWith("false\n", StringComparison.Ordinal) || output.StartsWith("false\r\n", StringComparison.Ordinal))
             {
                 return null;
@@ -329,13 +335,24 @@ internal sealed class GitPipelineOutputReader(string repositoryRoot, IProcessRun
 
     private async Task<string> RunGitAsync(string[] arguments, CancellationToken cancellationToken, ReadOnlyMemory<byte> input = default)
     {
-        var result = await processRunner.RunAndCaptureTextAsync("git", ["--no-optional-locks", .. arguments], repositoryRoot,
-            s_environmentVariables, input, cancellationToken).ConfigureAwait(false);
-        if (result.ExitCode != 0)
+        var standardOutput = new StringBuilder();
+        var standardError = new StringBuilder();
+        var exitCode = await processRunner.CreateExecution(new ProcessCommand("git")
         {
-            throw new DistributedApplicationException($"Git could not capture pipeline output (exit code {result.ExitCode}): {result.StandardError.Trim()}");
+            Arguments = ["--no-optional-locks", .. arguments],
+            WorkingDirectory = repositoryRoot,
+            EnvironmentVariables = s_environmentVariables,
+            Input = ProcessInput.FromBytes(input.Span)
+        }).DecodeChars(Encoding.UTF8)
+            .AppendStandardOutput(standardOutput)
+            .AppendStandardError(standardError)
+            .ExecuteAsync(cancellationToken).ConfigureAwait(false);
+        if (exitCode != 0)
+        {
+            throw new DistributedApplicationException($"Git could not capture pipeline output (exit code {exitCode}): {standardError.ToString().Trim()}");
         }
-        return result.StandardOutput;
+
+        return standardOutput.ToString();
     }
 
     internal sealed record SelectedFile(FileInfo File, IndexEntry? Index);

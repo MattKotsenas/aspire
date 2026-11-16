@@ -67,7 +67,6 @@
     <Compile Include="$(TestsSharedDir)TestTerminalService.cs" Link="shared/TestTerminalService.cs" />
     <Compile Include="$(TestsSharedDir)TestFileSystemService.cs" Link="shared/TestFileSystemService.cs" />
     <Compile Include="$(TestsSharedDir)TestModuleInitializer.cs" Link="shared/TestModuleInitalizer.cs" />
-    <Compile Include="$(TestsSharedDir)Processes\FakeEventStream.cs" Link="shared/Processes/FakeEventStream.cs" />
     <Compile Include="$(RepoRoot)src\Aspire.Hosting.PostgreSQL\PostgresContainerImageTags.cs" />
     <Compile Include="$(RepoRoot)src\Aspire.Hosting.Redis\RedisContainerImageTags.cs" />
     <Compile Include="$(RepoRoot)src\Shared\StableConnectionStringBuilder.cs" Link="shared/StableConnectionStringBuilder.cs" />

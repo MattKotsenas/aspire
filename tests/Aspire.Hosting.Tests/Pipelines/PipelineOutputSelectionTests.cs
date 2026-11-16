@@ -327,14 +327,19 @@ public sealed class PipelineOutputSelectionTests(ITestOutputHelper output)
         await PipelineOutputGitTestHelper.RunAsync(worktree, "config", "--local", "core.worktree", worktree);
         Assert.False(PipelineOutputRoot.IsWithinDirectory(worktree, root));
         var runner = new DefaultProcessRunner();
-        var probe = await runner.RunAndCaptureTextAsync("git",
-            ["--no-optional-locks", "rev-parse", "--is-inside-work-tree", "--show-cdup"], root,
-            cancellationToken: TestContext.Current.CancellationToken);
-        Assert.Equal(0, probe.ExitCode);
+        var standardOutput = new StringBuilder();
+        var exitCode = await runner.CreateExecution(new ProcessCommand("git")
+        {
+            Arguments = ["--no-optional-locks", "rev-parse", "--is-inside-work-tree", "--show-cdup"],
+            WorkingDirectory = root
+        }).DecodeChars(Encoding.UTF8)
+            .AppendStandardOutput(standardOutput)
+            .ExecuteAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(0, exitCode);
         // Outside a configured worktree, real Git emits "false\n/absolute/worktree\n",
         // not just "false\n". That is a non-worktree result, not malformed discovery.
-        Assert.Equal($"false\n{worktree.Replace('\\', '/')}\n", probe.StandardOutput.ReplaceLineEndings("\n"));
-        output.WriteLine($"Git discovery stdout: {probe.StandardOutput.ReplaceLineEndings("\n").Replace("\n", "\\n")}");
+        Assert.Equal($"false\n{worktree.Replace('\\', '/')}\n", standardOutput.ToString().ReplaceLineEndings("\n"));
+        output.WriteLine($"Git discovery stdout: {standardOutput.ToString().ReplaceLineEndings("\n").Replace("\n", "\\n")}");
         var artifact = Write(root, "artifact.txt", "before");
         Assert.Equal("before", File.ReadAllText(artifact));
         var options = new PipelineOutputDiffOptions { Mode = mode };

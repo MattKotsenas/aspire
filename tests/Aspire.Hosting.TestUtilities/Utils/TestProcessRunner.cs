@@ -10,6 +10,8 @@ internal sealed class TestProcessRunner : IProcessRunner
 {
     private readonly object _lock = new();
     private readonly Queue<TestProcessRun> _runs = [];
+    private readonly Queue<IAsyncEnumerable<ProcessEvent<ReadOnlyMemory<byte>>>> _scripts = [];
+    private readonly List<ProcessCommand> _commands = [];
     private readonly List<TestProcessDisposable> _disposables = [];
 
     private readonly List<ProcessSpec> _processSpecs = [];
@@ -26,6 +28,17 @@ internal sealed class TestProcessRunner : IProcessRunner
     }
 
     public Action<ProcessSpec>? RunCallback { get; set; }
+
+    public IReadOnlyList<ProcessCommand> Commands
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return [.. _commands];
+            }
+        }
+    }
 
     public IReadOnlyList<TestProcessDisposable> Disposables
     {
@@ -68,15 +81,6 @@ internal sealed class TestProcessRunner : IProcessRunner
             _runs.Enqueue(TestProcessRun.Result() with { PendingResult = processResult });
         }
     }
-
-    public Task<ProcessCaptureResult> RunAndCaptureTextAsync(
-        string executablePath,
-        IReadOnlyList<string> arguments,
-        string workingDirectory,
-        IReadOnlyDictionary<string, string>? environmentVariables = null,
-        ReadOnlyMemory<byte> standardInput = default,
-        CancellationToken cancellationToken = default)
-        => throw new NotSupportedException("This test runner supports only line execution.");
 
     public (Task<ProcessResult>, IAsyncDisposable) Run(ProcessSpec processSpec)
     {
@@ -129,9 +133,52 @@ internal sealed class TestProcessRunner : IProcessRunner
         return (Task.FromResult(processResult), disposable);
     }
 
-    // Event execution is added with this fake's first event-based business caller.
+    public void Enqueue(IAsyncEnumerable<ProcessEvent<ReadOnlyMemory<byte>>> script)
+    {
+        lock (_lock)
+        {
+            _scripts.Enqueue(script);
+        }
+    }
+
     public IAsyncEnumerable<ProcessEvent<ReadOnlyMemory<byte>>> CreateExecution(ProcessCommand command)
-        => throw new NotSupportedException();
+        => new ExecutionEventStream(new DeferredExecution(this, command));
+
+    // Select only on the first move. Forward reads and disposal separately so the consuming
+    // pipeline can retain both failures; an await-foreach iterator's finally would mask a read failure.
+    private sealed class DeferredExecution(TestProcessRunner owner, ProcessCommand command)
+        : IAsyncEnumerable<ProcessEvent<ReadOnlyMemory<byte>>>, IAsyncEnumerator<ProcessEvent<ReadOnlyMemory<byte>>>
+    {
+        private CancellationToken _cancellationToken;
+        private IAsyncEnumerator<ProcessEvent<ReadOnlyMemory<byte>>>? _enumerator;
+
+        public ProcessEvent<ReadOnlyMemory<byte>> Current => _enumerator!.Current;
+
+        // ExecutionEventStream owns the single-use claim, so this is acquired only once.
+        public IAsyncEnumerator<ProcessEvent<ReadOnlyMemory<byte>>> GetAsyncEnumerator(CancellationToken cancellationToken = default)
+        {
+            _cancellationToken = cancellationToken;
+            return this;
+        }
+
+        public ValueTask<bool> MoveNextAsync()
+        {
+            if (_enumerator is null)
+            {
+                _cancellationToken.ThrowIfCancellationRequested();
+                lock (owner._lock)
+                {
+                    var script = owner._scripts.Dequeue();
+                    owner._commands.Add(command);
+                    _enumerator = script.GetAsyncEnumerator(_cancellationToken);
+                }
+            }
+
+            return _enumerator.MoveNextAsync();
+        }
+
+        public ValueTask DisposeAsync() => _enumerator?.DisposeAsync() ?? ValueTask.CompletedTask;
+    }
 
     private sealed record TestProcessRun(
         int? ExitCode,
