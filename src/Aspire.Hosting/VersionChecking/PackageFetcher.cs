@@ -1,8 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.Globalization;
 using System.Text;
-using Aspire.Hosting.Dcp.Process;
+using Aspire.Hosting.Utils;
 using Aspire.Shared;
 using Microsoft.Extensions.Logging;
 
@@ -16,47 +17,51 @@ internal sealed class PackageFetcher : IPackageFetcher
     // Package search returns the latest version per source and few packages will match "Aspire.Hosting.AppHost" search string.
     private const int SearchPageSize = 1000;
 
+    private readonly IProcessRunner _processRunner;
     private readonly ILogger<PackageFetcher> _logger;
 
-    public PackageFetcher(ILogger<PackageFetcher> logger)
+    public PackageFetcher(IProcessRunner processRunner, ILogger<PackageFetcher> logger)
     {
+        _processRunner = processRunner;
         _logger = logger;
     }
 
     public async Task<List<NuGetPackage>> TryFetchPackagesAsync(string appHostDirectory, CancellationToken cancellationToken)
     {
         var outputJson = new StringBuilder();
-        var spec = new ProcessSpec("dotnet")
+        var command = new ProcessCommand("dotnet")
         {
-            Arguments = $"package search {PackageId} --format json --prerelease --take {SearchPageSize}",
-            ThrowOnNonZeroReturnCode = false,
-            InheritEnv = true,
-            OnOutputData = output =>
-            {
-                outputJson.Append(output);
-                _logger.LogDebug("dotnet (stdout): {Output}", output);
-            },
-            OnErrorData = error =>
-            {
-                _logger.LogDebug("dotnet (stderr): {Error}", error);
-            },
+            Arguments = ["package", "search", PackageId, "--format", "json", "--prerelease", "--take", SearchPageSize.ToString(CultureInfo.InvariantCulture)],
+            InheritEnvironmentVariables = true,
             WorkingDirectory = appHostDirectory
         };
 
-        _logger.LogDebug("Running dotnet CLI to check for latest version of {PackageId} with arguments: {ArgumentList}", PackageId, spec.Arguments);
-        var (pendingProcessResult, processDisposable) = ProcessUtil.Run(spec);
-
-        await using (processDisposable)
-        {
-            var processResult = await pendingProcessResult
-                .WaitAsync(cancellationToken)
-                .ConfigureAwait(false);
-
-            if (processResult.ExitCode != 0)
+        _logger.LogDebug("Running dotnet CLI to check for latest version of {PackageId} with arguments: {ArgumentList}", PackageId, string.Join(" ", command.Arguments));
+        // Preserve the exact JSON, including line endings, before framing diagnostic records.
+        var exitCode = await _processRunner.CreateExecution(command)
+            .DecodeChars(Encoding.UTF8)
+            .AppendStandardOutput(outputJson)
+            .FrameLines()
+            .OnStandardOutput(output =>
             {
-                _logger.LogDebug("The dotnet CLI call to check for latest version failed with exit code {ExitCode}.", processResult.ExitCode);
-                return [];
-            }
+                if (output.Length > 0)
+                {
+                    _logger.LogDebug("dotnet (stdout): {Output}", output);
+                }
+            })
+            .OnStandardError(error =>
+            {
+                if (error.Length > 0)
+                {
+                    _logger.LogDebug("dotnet (stderr): {Error}", error);
+                }
+            })
+            .ExecuteAsync(cancellationToken).ConfigureAwait(false);
+
+        if (exitCode != 0)
+        {
+            _logger.LogDebug("The dotnet CLI call to check for latest version failed with exit code {ExitCode}.", exitCode);
+            return [];
         }
 
         // Filter packages to only consider "Aspire.Hosting.AppHost".

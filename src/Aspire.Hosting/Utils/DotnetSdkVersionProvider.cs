@@ -6,7 +6,6 @@ using System.Collections.Concurrent;
 using System.Globalization;
 using System.IO.Hashing;
 using System.Text;
-using Aspire.Hosting.Dcp.Process;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Semver;
@@ -258,62 +257,77 @@ internal sealed class DotnetSdkVersionProvider : IDotnetSdkVersionProvider
     {
         try
         {
-            var (resultTask, process) = _processRunner.Run(new ProcessSpec(dotnetExecutablePath)
+            var command = new ProcessCommand(dotnetExecutablePath)
             {
                 WorkingDirectory = workingDirectory,
-                ArgumentList = ["--version"],
+                Arguments = ["--version"],
                 EnvironmentVariables = new Dictionary<string, string>(probeEnvironment),
                 ResolveExecutablePath = true,
-                RetainedOutputLineCount = 16,
-                ThrowOnNonZeroReturnCode = false,
-            });
+            };
+            var output = new ProcessOutputCapture(maxRetainedLineCount: 16);
+            using var timeoutSource =
+                CancellationTokenSource.CreateLinkedTokenSource(_applicationStopping);
+            timeoutSource.CancelAfter(s_probeTimeout);
 
-            await using (process)
+            int exitCode;
+            try
             {
-                using var timeoutSource =
-                    CancellationTokenSource.CreateLinkedTokenSource(_applicationStopping);
-                timeoutSource.CancelAfter(s_probeTimeout);
-
-                ProcessResult result;
-                try
-                {
-                    result = await resultTask.WaitAsync(timeoutSource.Token).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (_applicationStopping.IsCancellationRequested)
-                {
-                    _logger.LogDebug("The .NET SDK version probe was canceled because the AppHost is stopping.");
-                    return null;
-                }
-                catch (OperationCanceledException)
-                {
-                    _logger.LogDebug(
-                        "The .NET SDK version probe in '{WorkingDirectory}' timed out after {TimeoutSeconds} seconds.",
-                        workingDirectory,
-                        s_probeTimeout.TotalSeconds);
-                    return null;
-                }
-
-                if (result.ExitCode != 0)
-                {
-                    _logger.LogDebug(
-                        "The .NET SDK version probe in '{WorkingDirectory}' exited with code {ExitCode}.",
-                        workingDirectory,
-                        result.ExitCode);
-                    return null;
-                }
-
-                foreach (var line in result.ProcessOutput)
-                {
-                    if (SemVersion.TryParse(line.Trim(), SemVersionStyles.Strict, out var version))
+                exitCode = await _processRunner.CreateExecution(command)
+                    .DecodeChars(Encoding.UTF8)
+                    .FrameLines()
+                    .OnStandardOutput(line =>
                     {
-                        return version;
-                    }
+                        if (line.Length > 0)
+                        {
+                            output.Add(line);
+                        }
+                    })
+                    .OnStandardError(line =>
+                    {
+                        if (line.Length > 0)
+                        {
+                            output.Add(line);
+                        }
+                    })
+                    .ExecuteAsync(timeoutSource.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (_applicationStopping.IsCancellationRequested)
+            {
+                _logger.LogDebug("The .NET SDK version probe was canceled because the AppHost is stopping.");
+                return null;
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.LogDebug(
+                    "The .NET SDK version probe in '{WorkingDirectory}' timed out after {TimeoutSeconds} seconds.",
+                    workingDirectory,
+                    s_probeTimeout.TotalSeconds);
+                return null;
+            }
+
+            if (exitCode != 0)
+            {
+                _logger.LogDebug(
+                    "The .NET SDK version probe in '{WorkingDirectory}' exited with code {ExitCode}.",
+                    workingDirectory,
+                    exitCode);
+                return null;
+            }
+
+            // Diagnostics may precede a version such as "11.0.100-rc.1" on either stream.
+            // Parse the retained tail in order only after execution and disposal succeed.
+            foreach (var line in output.ToArray())
+            {
+                if (SemVersion.TryParse(line.Trim(), SemVersionStyles.Strict, out var version))
+                {
+                    return version;
                 }
             }
 
             _logger.LogDebug(
                 "The .NET SDK version probe in '{WorkingDirectory}' did not return a valid semantic version.",
                 workingDirectory);
+
         }
         catch (Exception ex)
         {

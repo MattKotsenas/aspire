@@ -16,6 +16,7 @@ using Aspire.Hosting.Dcp.Process;
 using Aspire.Hosting.Eventing;
 using Aspire.Hosting.Lifecycle;
 using Aspire.Hosting.Pipelines;
+using Aspire.Hosting.Testing;
 using Aspire.Hosting.Tests.Helpers;
 using Aspire.Hosting.Tests.Dcp;
 using Aspire.Hosting.Tests.Utils;
@@ -144,8 +145,17 @@ public class DotnetProjectBuildCoordinatorTests(ITestOutputHelper outputHelper)
             options => options.ProjectDirectory = workspace.Path,
             outputHelper);
         var processRunner = new TestProcessRunner();
-        processRunner.EnqueueResult(output: [firstVersion]);
-        processRunner.EnqueueResult(output: [secondVersion]);
+        foreach (var version in new[] { firstVersion, secondVersion })
+        {
+            processRunner.Enqueue(new FakeEventStream<byte>(
+            [
+                Emit<byte>.Started(1),
+                Emit<byte>.Stdout(Encoding.UTF8.GetBytes(version)),
+                Emit<byte>.StdoutCompleted(),
+                Emit<byte>.StderrCompleted(),
+                Emit<byte>.Exited(0)
+            ]));
+        }
         var versionProvider = new DotnetSdkVersionProvider(
             processRunner,
             NullLogger<DotnetSdkVersionProvider>.Instance,
@@ -189,7 +199,7 @@ public class DotnetProjectBuildCoordinatorTests(ITestOutputHelper outputHelper)
 
         AddExpectedConfiguration(builder, secondExpected);
         Assert.Equal(secondExpected, secondArgs);
-        Assert.Equal(2, processRunner.ProcessSpecs.Count);
+        Assert.Equal(2, processRunner.Commands.Count);
     }
 
     [Fact]
@@ -200,8 +210,17 @@ public class DotnetProjectBuildCoordinatorTests(ITestOutputHelper outputHelper)
             options => options.ProjectDirectory = workspace.Path,
             outputHelper);
         var processRunner = new TestProcessRunner();
-        processRunner.EnqueueResult(output: ["11.0.100-rc.1"]);
-        processRunner.EnqueueResult(output: ["10.0.999"]);
+        foreach (var version in new[] { "11.0.100-rc.1", "10.0.999" })
+        {
+            processRunner.Enqueue(new FakeEventStream<byte>(
+            [
+                Emit<byte>.Started(1),
+                Emit<byte>.Stdout(Encoding.UTF8.GetBytes(version)),
+                Emit<byte>.StdoutCompleted(),
+                Emit<byte>.StderrCompleted(),
+                Emit<byte>.Exited(0)
+            ]));
+        }
         builder.Services.AddSingleton<IDotnetSdkVersionProvider>(
             new DotnetSdkVersionProvider(
                 processRunner,
@@ -255,9 +274,9 @@ public class DotnetProjectBuildCoordinatorTests(ITestOutputHelper outputHelper)
             });
 
         Assert.Collection(
-            processRunner.ProcessSpecs,
-            processSpec => Assert.Equal(firstDotnetPath, processSpec.EnvironmentVariables["PATH"]),
-            processSpec => Assert.Equal(secondDotnetPath, processSpec.EnvironmentVariables["PATH"]));
+            processRunner.Commands,
+            command => Assert.Equal(firstDotnetPath, command.EnvironmentVariables["PATH"]),
+            command => Assert.Equal(secondDotnetPath, command.EnvironmentVariables["PATH"]));
     }
 
     [Fact]
