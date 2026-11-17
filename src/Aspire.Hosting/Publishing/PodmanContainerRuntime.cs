@@ -4,10 +4,10 @@
 #pragma warning disable ASPIREPIPELINES003
 #pragma warning disable ASPIRECONTAINERRUNTIME001
 
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Aspire.Hosting.ApplicationModel;
-using Aspire.Hosting.Dcp.Process;
 using Aspire.Hosting.Utils;
 using Aspire.Shared;
 using Microsoft.Extensions.Logging;
@@ -31,45 +31,37 @@ internal sealed class PodmanContainerRuntime : ContainerRuntimeBase<PodmanContai
     {
         await EnsureRuntimeAvailableAsync().ConfigureAwait(false);
 
-        var arguments = $"ps --filter label=com.docker.compose.project={context.ProjectName} --format json";
-
         var outputLines = new List<string>();
 
-        var spec = new ProcessSpec(RuntimeExecutable)
+        var command = new ProcessCommand(RuntimeExecutable)
         {
-            Arguments = arguments,
-            WorkingDirectory = context.WorkingDirectory,
-            ThrowOnNonZeroReturnCode = false,
-            InheritEnv = true,
-            OnOutputData = output =>
+            Arguments = ["ps", "--filter", $"label=com.docker.compose.project={context.ProjectName}", "--format", "json"],
+            WorkingDirectory = context.WorkingDirectory
+        };
+
+        var exitCode = await ProcessRunner.CreateExecution(command)
+            .DecodeChars(Encoding.UTF8)
+            .FrameLines()
+            .OnStandardOutput(output =>
             {
                 if (!string.IsNullOrWhiteSpace(output))
                 {
                     outputLines.Add(output);
                 }
-            },
-            OnErrorData = error =>
+            })
+            .OnStandardError(error =>
             {
                 if (!string.IsNullOrWhiteSpace(error))
                 {
                     Logger.LogDebug("podman ps (stderr): {Error}", error);
                 }
-            }
-        };
+            })
+            .ExecuteAsync(cancellationToken).ConfigureAwait(false);
 
-        var (pendingProcessResult, processDisposable) = ProcessRunner.Run(spec);
-
-        await using (processDisposable)
+        if (exitCode != 0)
         {
-            var processResult = await pendingProcessResult
-                .WaitAsync(cancellationToken)
-                .ConfigureAwait(false);
-
-            if (processResult.ExitCode != 0)
-            {
-                Logger.LogDebug("podman ps failed with exit code {ExitCode}", processResult.ExitCode);
-                return null;
-            }
+            Logger.LogDebug("podman ps failed with exit code {ExitCode}", exitCode);
+            return null;
         }
 
         return ParsePodmanPsOutput(outputLines);
@@ -265,7 +257,7 @@ internal sealed class PodmanContainerRuntime : ContainerRuntimeBase<PodmanContai
     /// save --format "oci-archive" --output "/out/myapp-latest.tar" "myapp:latest"
     /// </code>
     /// </example>
-    internal static string BuildSaveArguments(string imageName, ContainerImageBuildOptions options)
+    internal static IReadOnlyList<string> BuildSaveArguments(string imageName, ContainerImageBuildOptions options)
     {
         var format = options.ImageFormat switch
         {
@@ -279,7 +271,7 @@ internal sealed class PodmanContainerRuntime : ContainerRuntimeBase<PodmanContai
         // ContainerImageReference (which hands the path to consumers) all resolve the same file.
         var archivePath = ResourceExtensions.GetContainerImageArchivePath(options.OutputPath!, imageName);
 
-        return $"save --format \"{format}\" --output \"{archivePath}\" \"{imageName}\"";
+        return ["save", "--format", format, "--output", archivePath, imageName];
     }
 
     public override async Task BuildImageAsync(string contextPath, string dockerfilePath, ContainerImageBuildOptions? options, Dictionary<string, string?> buildArguments, Dictionary<string, BuildImageSecretValue> buildSecrets, string? stage, CancellationToken cancellationToken)
@@ -299,7 +291,7 @@ internal sealed class PodmanContainerRuntime : ContainerRuntimeBase<PodmanContai
         try
         {
             var exitCode = await ExecuteContainerCommandWithExitCodeAsync(
-                "container ls -n 1",
+                ["container", "ls", "-n", "1"],
                 "Podman container ls failed with exit code {ExitCode}.",
                 "Podman is running and healthy.",
                 cancellationToken,

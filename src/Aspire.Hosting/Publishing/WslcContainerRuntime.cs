@@ -32,7 +32,7 @@ internal sealed class WslcContainerRuntime : ContainerRuntimeBase<WslcContainerR
         try
         {
             return await ExecuteContainerCommandWithExitCodeAsync(
-                "container ls -n 1",
+                ["container", "ls", "-n", "1"],
                 "WSLc is not running. Exit code: {ExitCode}.",
                 "WSLc is running.",
                 cancellationToken,

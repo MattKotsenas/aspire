@@ -6,9 +6,12 @@
 #pragma warning disable ASPIREPROJECTS001
 #pragma warning disable ASPIRECOMPUTE003
 
+using System.ComponentModel;
+using System.Text;
 using Aspire.Hosting.Dcp;
-using Aspire.Hosting.Dcp.Process;
+using Microsoft.AspNetCore.InternalTesting;
 using Aspire.Hosting.Publishing;
+using Aspire.Hosting.Testing;
 using Aspire.Hosting.Tests.Utils;
 using Aspire.Hosting.Utils;
 using Microsoft.Extensions.DependencyInjection;
@@ -25,17 +28,53 @@ public class WslcContainerRuntimeTests(ITestOutputHelper output)
     public async Task CheckIfRunningAsync_UsesContainerList(int exitCode, bool expected)
     {
         var runner = new TestProcessRunner();
-        runner.EnqueueResult(exitCode);
+        runner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(exitCode)]));
         var runtime = new WslcContainerRuntime(NullLogger<WslcContainerRuntime>.Instance, runner);
 
         Assert.Equal(expected, await runtime.CheckIfRunningAsync(TestContext.Current.CancellationToken));
-        Assert.Equal("container ls -n 1", Assert.Single(runner.ProcessSpecs).Arguments);
+        Assert.Equal(["container", "ls", "-n", "1"], Assert.Single(runner.Commands).Arguments);
+        Assert.Empty(runner.ProcessSpecs);
+    }
+
+    [Fact]
+    public async Task CheckIfRunningAsync_ReturnsFalseForWin32Exception()
+    {
+        var runner = new TestProcessRunner();
+        var script = new FakeEventStream<byte>([Emit<byte>.Fail(new Win32Exception("wslc not found"))]);
+        runner.Enqueue(script);
+        var runtime = new WslcContainerRuntime(NullLogger<WslcContainerRuntime>.Instance, runner);
+
+        Assert.False(await runtime.CheckIfRunningAsync(TestContext.Current.CancellationToken));
+
+        Assert.Equal(["container", "ls", "-n", "1"], Assert.Single(runner.Commands).Arguments);
+        Assert.Equal(1, script.DisposeCount);
+        Assert.Empty(runner.ProcessSpecs);
+    }
+
+    [Fact]
+    public async Task CheckIfRunningAsync_PropagatesNonWin32Exception()
+    {
+        var runner = new TestProcessRunner();
+        var failure = new InvalidOperationException("probe failed");
+        var script = new FakeEventStream<byte>([Emit<byte>.Fail(failure)]);
+        runner.Enqueue(script);
+        var runtime = new WslcContainerRuntime(NullLogger<WslcContainerRuntime>.Instance, runner);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => runtime.CheckIfRunningAsync(TestContext.Current.CancellationToken));
+
+        Assert.Same(failure, exception);
+        Assert.Equal(["container", "ls", "-n", "1"], Assert.Single(runner.Commands).Arguments);
+        Assert.Equal(1, script.DisposeCount);
+        Assert.Empty(runner.ProcessSpecs);
     }
 
     [Fact]
     public async Task BuildImageAsync_PassesBuildArgumentsSecretsAndStage()
     {
         var runner = new TestProcessRunner();
+        var script = new FakeEventStream<byte>([Emit<byte>.Exited(0)]);
+        runner.Enqueue(script);
         var runtime = new WslcContainerRuntime(NullLogger<WslcContainerRuntime>.Instance, runner);
         var unsetVariable = $"ASPIRE_WSLC_BUILD_ARG_{Guid.NewGuid():N}";
 
@@ -52,15 +91,17 @@ public class WslcContainerRuntimeTests(ITestOutputHelper output)
             "final",
             TestContext.Current.CancellationToken);
 
-        var spec = Assert.Single(runner.ProcessSpecs);
-        Assert.Equal("wslc", spec.ExecutablePath);
+        var command = Assert.Single(runner.Commands);
+        Assert.Equal("wslc", command.ExecutablePath);
         Assert.Equal(
             ["build", "--file", "Dockerfile", "--tag", "myapp:latest", "--build-arg", "VERSION=1.0",
                 "--secret", "id=token,type=env,env=TOKEN", "--secret", "id=file,type=file,src=secret.txt", "--target", "final",
                 Path.GetFullPath("context")],
-            spec.ArgumentList);
-        Assert.Equal("secret-value", spec.EnvironmentVariables["TOKEN"]);
-        Assert.Equal(1, Assert.Single(runner.Disposables).DisposeCallCount);
+            command.Arguments);
+        Assert.Equal("secret-value", command.EnvironmentVariables["TOKEN"]);
+        Assert.True(command.InheritEnvironmentVariables);
+        Assert.Equal(1, script.DisposeCount);
+        Assert.Empty(runner.ProcessSpecs);
     }
 
     [Theory]
@@ -75,6 +116,7 @@ public class WslcContainerRuntimeTests(ITestOutputHelper output)
     {
         var variable = $"ASPIRE_WSLC_BUILD_ARG_{Guid.NewGuid():N}";
         var runner = new TestProcessRunner();
+        runner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
         var runtime = new WslcContainerRuntime(NullLogger<WslcContainerRuntime>.Instance, runner);
         try
         {
@@ -92,9 +134,8 @@ public class WslcContainerRuntimeTests(ITestOutputHelper output)
                 expected.AddRange(["--build-arg", $"{variable}={expectedValue}"]);
             }
             expected.Add(Path.GetFullPath("context"));
-            var spec = Assert.Single(runner.ProcessSpecs);
-            Assert.Null(spec.Arguments);
-            Assert.Equal(expected, spec.ArgumentList);
+            Assert.Equal(expected, Assert.Single(runner.Commands).Arguments);
+            Assert.Empty(runner.ProcessSpecs);
             Assert.Equal(explicitValue, buildArguments[variable]);
         }
         finally
@@ -119,6 +160,7 @@ public class WslcContainerRuntimeTests(ITestOutputHelper output)
             [], [], null, TestContext.Current.CancellationToken));
 
         Assert.Contains("WSLc does not support selecting a platform", exception.Message);
+        Assert.Empty(runner.Commands);
         Assert.Empty(runner.ProcessSpecs);
     }
 
@@ -140,6 +182,7 @@ public class WslcContainerRuntimeTests(ITestOutputHelper output)
             [], [], null, TestContext.Current.CancellationToken));
 
         Assert.Contains("WSLc does not support Dockerfile image archive output or OCI image format selection.", exception.Message);
+        Assert.Empty(runner.Commands);
         Assert.Empty(runner.ProcessSpecs);
     }
 
@@ -147,7 +190,7 @@ public class WslcContainerRuntimeTests(ITestOutputHelper output)
     public async Task BuildImageAsync_PreservesProcessFailureOutput()
     {
         var runner = new TestProcessRunner();
-        runner.EnqueueResult(exitCode: 42, error: ["build failed"]);
+        runner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Stderr("build failed\n"u8), Emit<byte>.Exited(42)]));
         var runtime = new WslcContainerRuntime(NullLogger<WslcContainerRuntime>.Instance, runner);
 
         var exception = await Assert.ThrowsAsync<ProcessFailedException>(() => runtime.BuildImageAsync(
@@ -165,17 +208,40 @@ public class WslcContainerRuntimeTests(ITestOutputHelper output)
     public async Task RuntimeOperations_PropagateCancellationAndDisposeProcess(bool build)
     {
         var runner = new TestProcessRunner();
-        runner.EnqueuePending(new TaskCompletionSource<ProcessResult>(TaskCreationOptions.RunContinuationsAsynchronously).Task);
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var script = new FakeEventStream<byte>(
+        [
+            Emit<byte>.Stdout("running\n"u8),
+            Emit<byte>.Wait(release.Task),
+            Emit<byte>.Exited(0)
+        ]);
+        runner.Enqueue(script.OnStandardOutput(_ => started.TrySetResult()));
         var runtime = new WslcContainerRuntime(NullLogger<WslcContainerRuntime>.Instance, runner);
         using var cancellation = new CancellationTokenSource();
 
         var operation = build
             ? runtime.BuildImageAsync("context", "Dockerfile", new ContainerImageBuildOptions { ImageName = "myapp" }, [], [], null, cancellation.Token)
             : runtime.CheckIfRunningAsync(cancellation.Token);
-        await cancellation.CancelAsync();
+        try
+        {
+            await started.Task.DefaultTimeout();
+            Assert.False(cancellation.IsCancellationRequested);
+            Assert.False(operation.IsCompleted);
+            Assert.Equal(0, script.DisposeCount);
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => operation);
-        Assert.Equal(1, Assert.Single(runner.Disposables).DisposeCallCount);
+            await cancellation.CancelAsync();
+
+            var exception = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => operation).DefaultTimeout();
+            Assert.Equal(cancellation.Token, exception.CancellationToken);
+            Assert.Equal(1, script.DisposeCount);
+            Assert.Single(runner.Commands);
+            Assert.Empty(runner.ProcessSpecs);
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
     }
 
     [Theory]
@@ -188,6 +254,7 @@ public class WslcContainerRuntimeTests(ITestOutputHelper output)
         var runner = new TestProcessRunner();
         builder.Services.AddSingleton<IProcessRunner>(runner);
         builder.Services.Configure<DcpOptions>(options => options.ContainerRuntime = "wslc");
+        runner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
         var resource = builder.AddDockerfile("program", workspace.WorkspaceRoot.FullName);
         if (hostPlatform)
         {
@@ -198,18 +265,20 @@ public class WslcContainerRuntimeTests(ITestOutputHelper output)
 
         if (hostPlatform)
         {
+            runner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
             await manager.BuildImageAsync(resource.Resource, TestContext.Current.CancellationToken);
-            Assert.Equal(2, runner.ProcessSpecs.Count);
-            Assert.Equal("build", runner.ProcessSpecs[1].ArgumentList![0]);
+            Assert.Equal(2, runner.Commands.Count);
+            Assert.Equal("build", runner.Commands[1].Arguments[0]);
         }
         else
         {
             var exception = await Assert.ThrowsAsync<DistributedApplicationException>(
                 () => manager.BuildImageAsync(resource.Resource, TestContext.Current.CancellationToken));
             Assert.Contains("WSLc does not support selecting a platform", exception.Message);
-            Assert.Single(runner.ProcessSpecs);
+            Assert.Single(runner.Commands);
         }
-        Assert.Equal("container ls -n 1", runner.ProcessSpecs[0].Arguments);
+        Assert.Equal(["container", "ls", "-n", "1"], runner.Commands[0].Arguments);
+        Assert.Empty(runner.ProcessSpecs);
     }
 
     [Fact]
@@ -220,6 +289,7 @@ public class WslcContainerRuntimeTests(ITestOutputHelper output)
         var runner = new TestProcessRunner();
         builder.Services.AddSingleton<IProcessRunner>(runner);
         builder.Services.Configure<DcpOptions>(options => options.ContainerRuntime = "wslc");
+        runner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
         var resource = builder.AddDockerfile("program", workspace.WorkspaceRoot.FullName)
             .WithContainerBuildOptions(options =>
             {
@@ -233,7 +303,8 @@ public class WslcContainerRuntimeTests(ITestOutputHelper output)
             () => manager.BuildImageAsync(resource.Resource, TestContext.Current.CancellationToken));
 
         Assert.Contains("WSLc does not support Dockerfile image archive output", exception.Message);
-        Assert.Equal("container ls -n 1", Assert.Single(runner.ProcessSpecs).Arguments);
+        Assert.Equal(["container", "ls", "-n", "1"], Assert.Single(runner.Commands).Arguments);
+        Assert.Empty(runner.ProcessSpecs);
     }
 
     [Fact]
@@ -244,37 +315,53 @@ public class WslcContainerRuntimeTests(ITestOutputHelper output)
         using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
         var registry = builder.AddContainerRegistry("registry", "registry.example.com");
         var resource = builder.AddContainer("myapp", "myapp", "latest").WithContainerRegistry(registry);
+        runner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
+        runner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
+        runner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
+        runner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
+        runner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
+        const string password = "pässwörd🔑";
 
         await runtime.TagImageAsync("myapp:latest", "myapp:next", TestContext.Current.CancellationToken);
         await runtime.PushImageAsync(resource.Resource, TestContext.Current.CancellationToken);
-        await runtime.LoginToRegistryAsync("registry.example.com", "user", "password", TestContext.Current.CancellationToken);
+        await runtime.LoginToRegistryAsync("registry.example.com", "user", password, TestContext.Current.CancellationToken);
         await runtime.RemoveImageAsync("myapp:next", TestContext.Current.CancellationToken);
 
-        Assert.Collection(runner.ProcessSpecs,
-            spec => Assert.Equal("tag \"myapp:latest\" \"myapp:next\"", spec.Arguments),
-            spec => Assert.Equal("tag \"myapp:latest\" \"registry.example.com/myapp:latest\"", spec.Arguments),
-            spec => Assert.Equal("push \"registry.example.com/myapp:latest\"", spec.Arguments),
-            spec =>
+        Assert.Collection(runner.Commands,
+            command => Assert.Equal(["tag", "myapp:latest", "myapp:next"], command.Arguments),
+            command => Assert.Equal(["tag", "myapp:latest", "registry.example.com/myapp:latest"], command.Arguments),
+            command => Assert.Equal(["push", "registry.example.com/myapp:latest"], command.Arguments),
+            command =>
             {
-                Assert.Equal("login --username \"user\" --password-stdin \"registry.example.com\"", spec.Arguments);
-                Assert.Equal("password", spec.StandardInputContent);
+                Assert.Equal(["login", "--username", "user", "--password-stdin", "registry.example.com"], command.Arguments);
+                Assert.Equal(Encoding.UTF8.GetBytes(password + Environment.NewLine), Assert.IsType<ProcessInput>(command.Input).Bytes.ToArray());
             },
-            spec => Assert.Equal("rmi \"myapp:next\"", spec.Arguments));
-        Assert.All(runner.ProcessSpecs, spec => Assert.Equal("wslc", spec.ExecutablePath));
+            command => Assert.Equal(["rmi", "myapp:next"], command.Arguments));
+        Assert.All(runner.Commands, command => Assert.Equal("wslc", command.ExecutablePath));
+        Assert.Empty(runner.ProcessSpecs);
     }
 
     [Fact]
-    public async Task InspectImageConfigAsync_ParsesNativeJson()
+    public async Task InspectImageConfigAsync_ParsesNativeJsonAndPreservesExactRawJson()
     {
-        const string json = """[{"Config":{"Entrypoint":["dotnet","app.dll"],"Cmd":["--urls"],"WorkingDir":"/app"}}]""";
+        const string json = "[\r\n  {\n" +
+            "    \"Id\": \"sha256:0123456789abcdef\",\r\n\r\n" +
+            "    \"Architecture\": \"amd64\",\n" +
+            "    \"Os\": \"linux\",\r\n" +
+            "    \"Config\": {\n" +
+            "      \"Entrypoint\": [\"dotnet\", \"app.dll\"],\r\n" +
+            "      \"Cmd\": [\"--urls\"],\n" +
+            "      \"WorkingDir\": \"/app\"\r\n" +
+            "    }\n  }\r\n]\n";
         var runner = new TestProcessRunner();
-        runner.EnqueueResult(output: [json]);
+        runner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Stdout(Encoding.UTF8.GetBytes(json)), Emit<byte>.Exited(0)]));
         var runtime = new WslcContainerRuntime(NullLogger<WslcContainerRuntime>.Instance, runner);
         const string imageName = "registry/image\\\" --help";
 
         var result = await runtime.InspectImageConfigAsync(imageName, TestContext.Current.CancellationToken);
 
-        Assert.Equal(["image", "inspect", imageName, "--format", "json"], Assert.Single(runner.ProcessSpecs).ArgumentList);
+        Assert.Equal(["image", "inspect", imageName, "--format", "json"], Assert.Single(runner.Commands).Arguments);
+        Assert.Empty(runner.ProcessSpecs);
         Assert.Equal(ContainerImageInspectionStatus.Succeeded, result.Status);
         Assert.Equal(json, result.RawJson);
         Assert.True(result.TryGetConfig(out var config));
@@ -287,7 +374,7 @@ public class WslcContainerRuntimeTests(ITestOutputHelper output)
     public async Task InspectImageConfigAsync_AllowsNullEntrypointAndCommand()
     {
         var runner = new TestProcessRunner();
-        runner.EnqueueResult(output: ["""[{"Config":{"Entrypoint":null,"Cmd":null,"WorkingDir":""}}]"""]);
+        runner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Stdout("""[{"Config":{"Entrypoint":null,"Cmd":null,"WorkingDir":""}}]"""u8), Emit<byte>.Exited(0)]));
         var runtime = new WslcContainerRuntime(NullLogger<WslcContainerRuntime>.Instance, runner);
 
         var result = await runtime.InspectImageConfigAsync("image", TestContext.Current.CancellationToken);
@@ -307,7 +394,7 @@ public class WslcContainerRuntimeTests(ITestOutputHelper output)
     public async Task InspectImageConfigAsync_ReportsInvalidMetadata(string json)
     {
         var runner = new TestProcessRunner();
-        runner.EnqueueResult(output: [json]);
+        runner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Stdout(Encoding.UTF8.GetBytes(json)), Emit<byte>.Exited(0)]));
         var runtime = new WslcContainerRuntime(NullLogger<WslcContainerRuntime>.Instance, runner);
 
         var result = await runtime.InspectImageConfigAsync("image", TestContext.Current.CancellationToken);
@@ -321,7 +408,7 @@ public class WslcContainerRuntimeTests(ITestOutputHelper output)
     public async Task InspectImageConfigAsync_ReportsCommandFailure()
     {
         var runner = new TestProcessRunner();
-        runner.EnqueueResult(exitCode: 1, error: ["image not found"]);
+        runner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Stderr("image not found\n"u8), Emit<byte>.Exited(1)]));
         var runtime = new WslcContainerRuntime(NullLogger<WslcContainerRuntime>.Instance, runner);
 
         var result = await runtime.InspectImageConfigAsync("image", TestContext.Current.CancellationToken);
@@ -346,6 +433,7 @@ public class WslcContainerRuntimeTests(ITestOutputHelper output)
 
         var inspection = await runtime.InspectImageManifestAsync("image", TestContext.Current.CancellationToken);
         Assert.Equal(ContainerImageInspectionStatus.Unsupported, inspection.Status);
+        Assert.Empty(runner.Commands);
         Assert.Empty(runner.ProcessSpecs);
     }
 

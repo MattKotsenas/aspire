@@ -5,6 +5,7 @@
 #pragma warning disable ASPIREPIPELINES003
 
 using Aspire.Hosting.Publishing;
+using Aspire.Hosting.Testing;
 using Aspire.Hosting.Tests.Utils;
 using Aspire.Hosting.Utils;
 using Microsoft.Extensions.DependencyInjection;
@@ -28,7 +29,7 @@ public class PodmanSaveArgumentsTests
         var arguments = PodmanContainerRuntime.BuildSaveArguments("myapp:latest", options);
 
         var expectedPath = Path.Combine("out", "archives", "myapp-latest.tar");
-        Assert.Equal($"save --format \"oci-archive\" --output \"{expectedPath}\" \"myapp:latest\"", arguments);
+        Assert.Equal(["save", "--format", "oci-archive", "--output", expectedPath, "myapp:latest"], arguments);
     }
 
     [Fact]
@@ -45,7 +46,7 @@ public class PodmanSaveArgumentsTests
         var arguments = PodmanContainerRuntime.BuildSaveArguments("myapp:latest", options);
 
         var expectedPath = Path.Combine("out", "archives", "myapp-latest.tar");
-        Assert.Equal($"save --format \"docker-archive\" --output \"{expectedPath}\" \"myapp:latest\"", arguments);
+        Assert.Equal(["save", "--format", "docker-archive", "--output", expectedPath, "myapp:latest"], arguments);
     }
 
     [Fact]
@@ -61,7 +62,7 @@ public class PodmanSaveArgumentsTests
         var arguments = PodmanContainerRuntime.BuildSaveArguments("myapp:latest", options);
 
         var expectedPath = Path.Combine("out", "archives", "myapp-latest.tar");
-        Assert.Equal($"save --format \"docker-archive\" --output \"{expectedPath}\" \"myapp:latest\"", arguments);
+        Assert.Equal(["save", "--format", "docker-archive", "--output", expectedPath, "myapp:latest"], arguments);
     }
 
     [Fact]
@@ -81,7 +82,7 @@ public class PodmanSaveArgumentsTests
         var arguments = PodmanContainerRuntime.BuildSaveArguments("registry.example.com/team/myapp:1.2.3", options);
 
         var dockerArchivePath = ResourceExtensions.GetContainerImageArchivePath(outputPath, "registry.example.com/team/myapp:1.2.3");
-        Assert.Contains($"--output \"{dockerArchivePath}\"", arguments, StringComparison.Ordinal);
+        Assert.Equal(["save", "--format", "oci-archive", "--output", dockerArchivePath, "registry.example.com/team/myapp:1.2.3"], arguments);
     }
 
     [Fact]
@@ -114,6 +115,7 @@ public class PodmanSaveArgumentsTests
         var consumerPath = await imageReference.GetValueAsync(
             new ValueProviderContext { ExecutionContext = app.Services.GetRequiredService<DistributedApplicationExecutionContext>() },
             CancellationToken.None);
+        Assert.NotNull(consumerPath);
 
         var options = new ContainerImageBuildOptions
         {
@@ -126,7 +128,7 @@ public class PodmanSaveArgumentsTests
         var arguments = PodmanContainerRuntime.BuildSaveArguments($"{ImageName}:{ImageTag}", options);
 
         Assert.Equal(
-            $"save --format \"oci-archive\" --output \"{consumerPath}\" \"{ImageName}:{ImageTag}\"",
+            ["save", "--format", "oci-archive", "--output", consumerPath, $"{ImageName}:{ImageTag}"],
             arguments);
     }
 
@@ -144,7 +146,30 @@ public class PodmanSaveArgumentsTests
 
         var arguments = PodmanContainerRuntime.BuildSaveArguments("container:abc123", options);
 
-        Assert.Contains($"--output \"{Path.Combine("out", "container-abc123.tar")}\"", arguments, StringComparison.Ordinal);
+        Assert.Equal(["save", "--format", "oci-archive", "--output", Path.Combine("out", "container-abc123.tar"), "container:abc123"], arguments);
+    }
+
+    [Theory]
+    [InlineData("registry.example.com/team/app \"quoted\":tag", "registry.example.com-team-app \"quoted\"-tag.tar")]
+    [InlineData(@"registry.example.com/team/app\", @"registry.example.com-team-app\.tar")]
+    public void BuildSaveArguments_PreservesLiteralImageAndArchivePath(string imageName, string archiveFileName)
+    {
+        var outputPath = Path.Combine("out", "archives with spaces") + Path.DirectorySeparatorChar;
+        var options = new ContainerImageBuildOptions
+        {
+            ImageName = imageName,
+            OutputPath = outputPath,
+            ImageFormat = ContainerImageFormat.Docker
+        };
+        // OutputPath is a portable directory path. Image references are opaque boundary data;
+        // these pure argument builders do not create the derived archive, even for quoted names.
+        var expectedPath = Path.Combine(outputPath, archiveFileName);
+
+        var dockerArguments = DockerContainerRuntime.BuildSaveArguments(imageName, options);
+        var podmanArguments = PodmanContainerRuntime.BuildSaveArguments(imageName, options);
+
+        Assert.Equal(["image", "save", "--output", expectedPath, imageName], dockerArguments);
+        Assert.Equal(["save", "--format", "docker-archive", "--output", expectedPath, imageName], podmanArguments);
     }
 
     [Theory]
@@ -165,6 +190,7 @@ public class PodmanSaveArgumentsTests
         var exception = await Assert.ThrowsAsync<ArgumentException>(() => BuildImageAsync(runtime, options));
 
         Assert.Equal("options", exception.ParamName);
+        Assert.Empty(processRunner.Commands);
         Assert.Empty(processRunner.ProcessSpecs);
     }
 
@@ -174,7 +200,7 @@ public class PodmanSaveArgumentsTests
     public async Task BuildImageAsync_WithoutOutputPath_DoesNotSave(string? outputPath)
     {
         var processRunner = new TestProcessRunner();
-        processRunner.EnqueueResult();
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
         var runtime = CreateRuntime(processRunner);
         var options = new ContainerImageBuildOptions
         {
@@ -186,16 +212,17 @@ public class PodmanSaveArgumentsTests
 
         await BuildImageAsync(runtime, options);
 
-        var buildSpec = Assert.Single(processRunner.ProcessSpecs);
-        Assert.Equal("build", buildSpec.ArgumentList![0]);
+        var build = Assert.Single(processRunner.Commands);
+        Assert.Equal("podman", build.ExecutablePath);
+        Assert.Equal("build", build.Arguments[0]);
     }
 
     [Fact]
     public async Task BuildImageAsync_WithOutputPath_BuildsThenSaves()
     {
         var processRunner = new TestProcessRunner();
-        processRunner.EnqueueResult();
-        processRunner.EnqueueResult();
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
         var runtime = CreateRuntime(processRunner);
         var options = new ContainerImageBuildOptions
         {
@@ -207,17 +234,20 @@ public class PodmanSaveArgumentsTests
 
         await BuildImageAsync(runtime, options);
 
+        Assert.All(processRunner.Commands, command => Assert.Equal("podman", command.ExecutablePath));
         Assert.Collection(
-            processRunner.ProcessSpecs,
-            buildSpec => Assert.Equal("build", buildSpec.ArgumentList![0]),
-            saveSpec => Assert.Equal(PodmanContainerRuntime.BuildSaveArguments("myapp:latest", options), saveSpec.Arguments));
+            processRunner.Commands,
+            build => Assert.Equal("build", build.Arguments[0]),
+            save => Assert.Equal(
+                ["save", "--format", "oci-archive", "--output", Path.Combine("out", "myapp-latest.tar"), "myapp:latest"],
+                save.Arguments));
     }
 
     [Fact]
     public async Task BuildImageAsync_WhenBuildFails_DoesNotSave()
     {
         var processRunner = new TestProcessRunner();
-        processRunner.EnqueueResult(exitCode: 17, output: ["build failed"]);
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Stdout("build failed\n"u8), Emit<byte>.Exited(17)]));
         var runtime = CreateRuntime(processRunner);
         var options = new ContainerImageBuildOptions
         {
@@ -231,15 +261,17 @@ public class PodmanSaveArgumentsTests
 
         Assert.Equal(17, exception.ExitCode);
         Assert.Contains("build failed", exception.Message);
-        Assert.Single(processRunner.ProcessSpecs);
+        Assert.Equal(["build failed"], exception.ProcessOutput);
+        var build = Assert.Single(processRunner.Commands);
+        Assert.Equal("build", build.Arguments[0]);
     }
 
     [Fact]
     public async Task BuildImageAsync_WhenSaveFails_ThrowsProcessFailedException()
     {
         var processRunner = new TestProcessRunner();
-        processRunner.EnqueueResult();
-        processRunner.EnqueueResult(exitCode: 23, output: ["save failed"]);
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Stdout("save failed\n"u8), Emit<byte>.Exited(23)]));
         var runtime = CreateRuntime(processRunner);
         var options = new ContainerImageBuildOptions
         {
@@ -253,10 +285,13 @@ public class PodmanSaveArgumentsTests
 
         Assert.Equal(23, exception.ExitCode);
         Assert.Contains("save failed", exception.Message);
+        Assert.Equal(["save failed"], exception.ProcessOutput);
         Assert.Collection(
-            processRunner.ProcessSpecs,
-            buildSpec => Assert.Equal("build", buildSpec.ArgumentList![0]),
-            saveSpec => Assert.StartsWith("save ", Assert.IsType<string>(saveSpec.Arguments), StringComparison.Ordinal));
+            processRunner.Commands,
+            build => Assert.Equal("build", build.Arguments[0]),
+            save => Assert.Equal(
+                ["save", "--format", "oci-archive", "--output", Path.Combine("out", "myapp-latest.tar"), "myapp:latest"],
+                save.Arguments));
     }
 
     private static PodmanContainerRuntime CreateRuntime(TestProcessRunner processRunner)

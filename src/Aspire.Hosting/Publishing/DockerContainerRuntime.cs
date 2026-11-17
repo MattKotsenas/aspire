@@ -194,15 +194,17 @@ internal sealed class DockerContainerRuntime : ContainerRuntimeBase<DockerContai
     private async Task<string> GetActiveDockerContextAsync(string imageName, CancellationToken cancellationToken)
     {
         var output = await ExecuteContainerCommandForOutputAsync(
-            "context show",
+            ["context", "show"],
             "context discovery",
             imageName,
             cancellationToken).ConfigureAwait(false);
 
         // `docker context show` emits exactly one context name, for example:
         //   desktop-linux
+        // Query capture preserves native line endings, so validate records independently
+        // of the host platform's newline convention.
         var contextNames = output.Split(
-            Environment.NewLine,
+            ['\r', '\n'],
             StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         if (contextNames is not [var contextName])
         {
@@ -239,7 +241,7 @@ internal sealed class DockerContainerRuntime : ContainerRuntimeBase<DockerContai
     /// <summary>
     /// Builds the arguments that save a locally built image as a Docker archive.
     /// </summary>
-    internal static string BuildSaveArguments(string imageName, ContainerImageBuildOptions options)
+    internal static IReadOnlyList<string> BuildSaveArguments(string imageName, ContainerImageBuildOptions options)
     {
         var outputPath = options.OutputPath;
         ArgumentException.ThrowIfNullOrEmpty(outputPath);
@@ -248,7 +250,7 @@ internal sealed class DockerContainerRuntime : ContainerRuntimeBase<DockerContai
         // Layered archives use a private tag whose platforms were already selected by the build.
         // Save all its variants without requiring API 1.48+ (1.52+ for multiple platforms) for filtering.
         // https://docs.docker.com/reference/cli/docker/image/save/#platform
-        return $"image save --output \"{archivePath}\" \"{imageName}\"";
+        return ["image", "save", "--output", archivePath, imageName];
     }
 
     public override async Task<bool> CheckIfRunningAsync(CancellationToken cancellationToken)
@@ -261,7 +263,7 @@ internal sealed class DockerContainerRuntime : ContainerRuntimeBase<DockerContai
         try
         {
             var exitCode = await ExecuteContainerCommandWithExitCodeAsync(
-                "container ls -n 1",
+                ["container", "ls", "-n", "1"],
                 "Docker daemon is not running. Exit code: {ExitCode}.",
                 "Docker daemon is running.",
                 cancellationToken,
@@ -280,7 +282,7 @@ internal sealed class DockerContainerRuntime : ContainerRuntimeBase<DockerContai
         try
         {
             var exitCode = await ExecuteContainerCommandWithExitCodeAsync(
-                "buildx version",
+                ["buildx", "version"],
                 "Docker buildx version failed with exit code {ExitCode}.",
                 "Docker buildx is available.",
                 cancellationToken,
@@ -296,9 +298,8 @@ internal sealed class DockerContainerRuntime : ContainerRuntimeBase<DockerContai
 
     private async Task CreateBuildkitInstanceAsync(string builderName, CancellationToken cancellationToken)
     {
-        var arguments = $"buildx create --name \"{builderName}\" --driver docker-container";
         var processResult = await ExecuteContainerCommandWithResultAsync(
-            arguments,
+            ["buildx", "create", "--name", builderName, "--driver", "docker-container"],
             "Failed to create buildkit instance {BuilderName} with exit code {ExitCode}.",
             "Successfully created buildkit instance {BuilderName}.",
             cancellationToken,
@@ -317,10 +318,8 @@ internal sealed class DockerContainerRuntime : ContainerRuntimeBase<DockerContai
 
     private async Task<int> RemoveBuildkitInstanceAsync(string builderName, CancellationToken cancellationToken)
     {
-        var arguments = $"buildx rm \"{builderName}\"";
-
         return await ExecuteContainerCommandWithExitCodeAsync(
-            arguments,
+            ["buildx", "rm", builderName],
             "Failed to remove buildkit instance {BuilderName} with exit code {ExitCode}.",
             "Successfully removed buildkit instance {BuilderName}.",
             cancellationToken,

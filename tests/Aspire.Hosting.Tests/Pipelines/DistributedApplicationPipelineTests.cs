@@ -14,6 +14,7 @@ using Aspire.Hosting.Pipelines.Internal;
 using Aspire.Hosting.Publishing;
 using Aspire.Hosting.Testing;
 using Aspire.Hosting.Tests.Publishing;
+using Aspire.Hosting.Tests.Utils;
 using Aspire.Hosting.Utils;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -34,6 +35,35 @@ public class DistributedApplicationPipelineTests(ITestOutputHelper testOutputHel
     {
         _aspireHome.Delete(recursive: true);
         GC.SuppressFinalize(this);
+    }
+
+    [Theory]
+    [InlineData(" tag with spaces\t")]
+    [InlineData("tag\\\"quoted")]
+    public async Task PushImageAsync_PreservesConfiguredRemoteTagInBothCommands(string tag)
+    {
+        using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
+        var registry = builder.AddContainerRegistry("registry", "registry.example.com");
+        var resource = builder.AddContainer("app", "local", "latest")
+            .WithContainerRegistry(registry)
+            .WithImagePushOptions(context =>
+            {
+                context.Options.RemoteImageName = "remote";
+                context.Options.RemoteImageTag = tag;
+            });
+        var runner = new TestProcessRunner();
+        runner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
+        runner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
+        var runtime = new DockerContainerRuntime(NullLogger<DockerContainerRuntime>.Instance, runner);
+
+        await runtime.PushImageAsync(resource.Resource, TestContext.Current.CancellationToken);
+
+        var remoteImageName = $"registry.example.com/remote:{tag}";
+        Assert.Collection(runner.Commands,
+            command => Assert.Equal(["tag", "local:latest", remoteImageName], command.Arguments),
+            command => Assert.Equal(["push", remoteImageName], command.Arguments));
+        Assert.All(runner.Commands, command => Assert.Equal("docker", command.ExecutablePath));
+        Assert.Empty(runner.ProcessSpecs);
     }
 
     [Fact]

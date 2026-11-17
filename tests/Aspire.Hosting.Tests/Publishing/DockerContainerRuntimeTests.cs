@@ -4,9 +4,11 @@
 #pragma warning disable ASPIRECONTAINERRUNTIME001
 #pragma warning disable ASPIREPIPELINES003
 
-using Aspire.Hosting.Dcp.Process;
+using System.Text;
 using Aspire.Hosting.Publishing;
+using Aspire.Hosting.Testing;
 using Aspire.Hosting.Tests.Utils;
+using Aspire.Hosting.Utils;
 using Microsoft.AspNetCore.InternalTesting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -23,10 +25,10 @@ public class DockerContainerRuntimeTests
     public async Task BuildImageAsync_ArchiveUsesIsolatedBuilder(ContainerImageFormat? imageFormat)
     {
         var processRunner = new TestProcessRunner();
-        processRunner.EnqueueResult();
-        processRunner.EnqueueResult();
-        processRunner.EnqueueResult();
-        processRunner.EnqueueResult();
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
         var runtime = new DockerContainerRuntime(
             NullLogger<DockerContainerRuntime>.Instance,
             processRunner);
@@ -49,15 +51,16 @@ public class DockerContainerRuntimeTests
 
         var archivePath = ResourceExtensions.GetContainerImageArchivePath("out", "myapp:latest");
         var outputType = imageFormat == ContainerImageFormat.Oci ? "type=oci" : "type=docker";
-        var processSpecs = processRunner.ProcessSpecs;
-        Assert.Equal(4, processSpecs.Count);
-        Assert.Equal("buildx version", processSpecs[0].Arguments);
-        var builderName = AssertAndGetBuilderName(processSpecs[1].Arguments);
+        var commands = processRunner.Commands;
+        Assert.Equal(4, commands.Count);
+        Assert.All(commands, command => Assert.Equal("docker", command.ExecutablePath));
+        Assert.Equal(["buildx", "version"], commands[0].Arguments);
+        var builderName = AssertAndGetBuilderName(commands[1].Arguments);
         Assert.Equal(
             ["buildx", "build", "--file", "Dockerfile", "--tag", "myapp:latest", "--builder", builderName,
                 "--output", $"{outputType},dest={archivePath}", GetNormalizedContextPath()],
-            processSpecs[2].ArgumentList);
-        Assert.Equal($"buildx rm \"{builderName}\"", processSpecs[3].Arguments);
+            commands[2].Arguments);
+        Assert.Equal(["buildx", "rm", builderName], commands[3].Arguments);
     }
 
     [Fact]
@@ -66,7 +69,7 @@ public class DockerContainerRuntimeTests
         var processRunner = new TestProcessRunner();
         for (var i = 0; i < 8; i++)
         {
-            processRunner.EnqueueResult();
+            processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
         }
 
         var runtime = new DockerContainerRuntime(
@@ -83,10 +86,10 @@ public class DockerContainerRuntimeTests
         await BuildImageAsync(runtime, options);
         await BuildImageAsync(runtime, options);
 
-        var builderNames = processRunner.ProcessSpecs
-            .Where(static spec => spec.Arguments is string arguments &&
-                arguments.StartsWith("buildx create ", StringComparison.Ordinal))
-            .Select(spec => AssertAndGetBuilderName(spec.Arguments))
+        Assert.Equal(8, processRunner.Commands.Count);
+        var builderNames = processRunner.Commands
+            .Where(static command => command.Arguments.Take(2).SequenceEqual(["buildx", "create"]))
+            .Select(command => AssertAndGetBuilderName(command.Arguments))
             .ToArray();
         Assert.Equal(2, builderNames.Length);
         Assert.Equal(2, builderNames.Distinct(StringComparer.Ordinal).Count());
@@ -96,12 +99,27 @@ public class DockerContainerRuntimeTests
     public async Task BuildImageAsync_CancellationWaitsForIsolatedBuilderCleanup()
     {
         var processRunner = new TestProcessRunner();
-        processRunner.EnqueueResult();
-        processRunner.EnqueueResult();
-        var buildResult = new TaskCompletionSource<ProcessResult>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var cleanupResult = new TaskCompletionSource<ProcessResult>(TaskCreationOptions.RunContinuationsAsynchronously);
-        processRunner.EnqueuePending(buildResult.Task);
-        processRunner.EnqueuePending(cleanupResult.Task);
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
+        var buildStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var buildRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var buildDisposed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cleanupStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cleanupRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var build = new FakeEventStream<byte>(
+        [
+            Emit<byte>.Stdout("building\n"u8),
+            Emit<byte>.Wait(buildRelease.Task),
+            Emit<byte>.Exited(0)
+        ], cleanup: buildDisposed.Task);
+        var cleanup = new FakeEventStream<byte>(
+        [
+            Emit<byte>.Stdout("removing builder\n"u8),
+            Emit<byte>.Wait(cleanupRelease.Task),
+            Emit<byte>.Exited(0)
+        ]);
+        processRunner.Enqueue(build.OnStandardOutput(_ => buildStarted.TrySetResult()));
+        processRunner.Enqueue(cleanup.OnStandardOutput(_ => cleanupStarted.TrySetResult()));
         var runtime = new DockerContainerRuntime(
             NullLogger<DockerContainerRuntime>.Instance,
             processRunner);
@@ -123,36 +141,52 @@ public class DockerContainerRuntimeTests
             stage: null,
             cancellationToken: cancellation.Token);
 
-        await AsyncTestHelpers.AssertIsTrueRetryAsync(
-            () => processRunner.ProcessSpecs.Count == 3,
-            "The Docker build should start.");
-        await cancellation.CancelAsync();
-        await AsyncTestHelpers.AssertIsTrueRetryAsync(
-            () => processRunner.ProcessSpecs.Count == 4,
-            "The isolated builder cleanup should start after cancellation.");
-
-        var builderName = AssertAndGetBuilderName(processRunner.ProcessSpecs[1].Arguments);
-        Assert.Equal($"buildx rm \"{builderName}\"", processRunner.ProcessSpecs[3].Arguments);
         try
         {
+            await buildStarted.Task.DefaultTimeout();
+            Assert.False(cancellation.IsCancellationRequested);
             Assert.False(buildTask.IsCompleted);
+            Assert.Equal(3, processRunner.Commands.Count);
+
+            await cancellation.CancelAsync();
+            Assert.True(cancellation.IsCancellationRequested);
+            Assert.False(buildTask.IsCompleted);
+            Assert.Equal(3, processRunner.Commands.Count);
+            Assert.False(cleanupStarted.Task.IsCompleted);
+
+            // Builder removal must wait for the canceled build's process cleanup to settle.
+            buildDisposed.TrySetResult();
+            await cleanupStarted.Task.DefaultTimeout();
+            Assert.Equal(1, build.DisposeCount);
+            var builderName = AssertAndGetBuilderName(processRunner.Commands[1].Arguments);
+            Assert.Equal(["buildx", "rm", builderName], processRunner.Commands[3].Arguments);
+            Assert.False(buildTask.IsCompleted);
+
+            // The caller is already canceled; removal still has to finish with its own token.
+            cleanupRelease.TrySetResult();
+            var failure = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => buildTask).DefaultTimeout();
+            Assert.Equal(cancellation.Token, failure.CancellationToken);
+            Assert.Equal(1, cleanup.DisposeCount);
+            Assert.Equal(4, processRunner.Commands.Count);
         }
         finally
         {
-            cleanupResult.TrySetResult(new ProcessResult(0));
+            buildRelease.TrySetResult();
+            buildDisposed.TrySetResult();
+            cleanupRelease.TrySetResult();
         }
-
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => buildTask).DefaultTimeout();
     }
 
     [Fact]
     public async Task BuildImageAsync_CleanupFailureDoesNotMaskBuildFailure()
     {
         var processRunner = new TestProcessRunner();
-        processRunner.EnqueueResult();
-        processRunner.EnqueueResult();
-        processRunner.EnqueueResult(exitCode: 42, output: ["build failed"]);
-        processRunner.EnqueueException(new InvalidOperationException("cleanup failed"));
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
+        var build = new FakeEventStream<byte>([Emit<byte>.Stderr("build failed\n"u8), Emit<byte>.Exited(42)]);
+        var cleanup = new FakeEventStream<byte>([Emit<byte>.Fail(new InvalidOperationException("cleanup failed"))]);
+        processRunner.Enqueue(build);
+        processRunner.Enqueue(cleanup);
         var logger = new FakeLogger<DockerContainerRuntime>();
         var runtime = new DockerContainerRuntime(logger, processRunner);
         var options = new ContainerImageBuildOptions
@@ -167,6 +201,12 @@ public class DockerContainerRuntimeTests
             () => BuildImageAsync(runtime, options));
 
         Assert.Equal(42, exception.ExitCode);
+        Assert.Equal(["build failed"], exception.ProcessOutput);
+        Assert.Equal(1, build.DisposeCount);
+        Assert.Equal(1, cleanup.DisposeCount);
+        Assert.Equal(4, processRunner.Commands.Count);
+        var builderName = AssertAndGetBuilderName(processRunner.Commands[1].Arguments);
+        Assert.Equal(["buildx", "rm", builderName], processRunner.Commands[3].Arguments);
         Assert.Contains(
             logger.Collector.GetSnapshot(),
             log => log.Level == LogLevel.Warning &&
@@ -186,10 +226,10 @@ public class DockerContainerRuntimeTests
         ContainerImageFormat? imageFormat, ContainerTargetPlatform? targetPlatform, string? expectedPlatforms)
     {
         var processRunner = new TestProcessRunner();
-        processRunner.EnqueueResult();
-        processRunner.EnqueueResult(output: ["desktop-linux"]);
-        processRunner.EnqueueResult();
-        processRunner.EnqueueResult();
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Stdout("desktop-linux\n"u8), Emit<byte>.Exited(0)]));
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
         var runtime = new DockerContainerRuntime(
             NullLogger<DockerContainerRuntime>.Instance,
             processRunner);
@@ -208,15 +248,15 @@ public class DockerContainerRuntimeTests
         var archivePath = ResourceExtensions.GetContainerImageArchivePath("out", "myapp:latest");
         string[] platformArguments = expectedPlatforms is null ? [] : ["--platform", expectedPlatforms];
         Assert.Collection(
-            processRunner.ProcessSpecs,
-            check => Assert.Equal("buildx version", check.Arguments),
-            context => Assert.Equal("context show", context.Arguments),
+            processRunner.Commands,
+            check => Assert.Equal(["buildx", "version"], check.Arguments),
+            context => Assert.Equal(["context", "show"], context.Arguments),
             build => Assert.Equal(
                 ["buildx", "build", "--file", "Dockerfile", "--tag", "myapp:latest", "--builder", "desktop-linux",
                     .. platformArguments, GetNormalizedContextPath()],
-                build.ArgumentList),
+                build.Arguments),
             save => Assert.Equal(
-                $"image save --output \"{archivePath}\" \"myapp:latest\"",
+                ["image", "save", "--output", archivePath, "myapp:latest"],
                 save.Arguments));
     }
 
@@ -230,9 +270,13 @@ public class DockerContainerRuntimeTests
             "Learn more at https://docs.docker.com/go/build-multi-platform/"
         ];
         var processRunner = new TestProcessRunner();
-        processRunner.EnqueueResult();
-        processRunner.EnqueueResult(output: ["desktop-linux"]);
-        processRunner.EnqueueResult(exitCode: 1, error: diagnostic);
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Stdout("desktop-linux\n"u8), Emit<byte>.Exited(0)]));
+        processRunner.Enqueue(new FakeEventStream<byte>(
+        [
+            Emit<byte>.Stderr(Encoding.UTF8.GetBytes(string.Join('\n', diagnostic) + "\n")),
+            Emit<byte>.Exited(1)
+        ]));
         var runtime = new DockerContainerRuntime(
             NullLogger<DockerContainerRuntime>.Instance,
             processRunner);
@@ -254,22 +298,22 @@ public class DockerContainerRuntimeTests
             $"Docker build failed with exit code 1.{Environment.NewLine}{string.Join(Environment.NewLine, diagnostic)}",
             exception.Message);
         Assert.Collection(
-            processRunner.ProcessSpecs,
-            check => Assert.Equal("buildx version", check.Arguments),
-            context => Assert.Equal("context show", context.Arguments),
+            processRunner.Commands,
+            check => Assert.Equal(["buildx", "version"], check.Arguments),
+            context => Assert.Equal(["context", "show"], context.Arguments),
             build => Assert.Equal(
                 ["buildx", "build", "--file", "Dockerfile", "--tag", "myapp:latest", "--builder", "desktop-linux",
                     "--platform", "linux/amd64,linux/arm64", GetNormalizedContextPath()],
-                build.ArgumentList));
+                build.Arguments));
     }
 
     [Fact]
     public async Task BuildImageAsync_LocalImageWithoutArchiveUsesActiveContextBuilder()
     {
         var processRunner = new TestProcessRunner();
-        processRunner.EnqueueResult();
-        processRunner.EnqueueResult(output: ["desktop-linux"]);
-        processRunner.EnqueueResult();
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Stdout("desktop-linux\n"u8), Emit<byte>.Exited(0)]));
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
         var runtime = new DockerContainerRuntime(
             NullLogger<DockerContainerRuntime>.Instance,
             processRunner);
@@ -284,21 +328,79 @@ public class DockerContainerRuntimeTests
         await BuildImageAsync(runtime, options);
 
         Assert.Collection(
-            processRunner.ProcessSpecs,
-            check => Assert.Equal("buildx version", check.Arguments),
-            context => Assert.Equal("context show", context.Arguments),
+            processRunner.Commands,
+            check => Assert.Equal(["buildx", "version"], check.Arguments),
+            context => Assert.Equal(["context", "show"], context.Arguments),
             build => Assert.Equal(
                 ["buildx", "build", "--file", "Dockerfile", "--tag", "myapp:latest", "--builder", "desktop-linux",
                     "--platform", "linux/amd64", GetNormalizedContextPath()],
-                build.ArgumentList));
+                build.Arguments));
+    }
+
+    [Theory]
+    [InlineData("\n \n\t desktop-linux \t\n\n")]
+    [InlineData("\r\n \r\n\t desktop-linux \t\r\n\r\n")]
+    [InlineData("\r \r\t desktop-linux \t\r\r")]
+    public async Task BuildImageAsync_LocalImageAcceptsOneTrimmedActiveContext(string output)
+    {
+        var processRunner = new TestProcessRunner();
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Stdout(Encoding.UTF8.GetBytes(output)), Emit<byte>.Exited(0)]));
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
+        var runtime = new DockerContainerRuntime(NullLogger<DockerContainerRuntime>.Instance, processRunner);
+        var options = new ContainerImageBuildOptions
+        {
+            ImageName = "myapp",
+            Tag = "latest",
+            RequiresLocalImageStore = true
+        };
+
+        await BuildImageAsync(runtime, options);
+
+        Assert.Collection(
+            processRunner.Commands,
+            check => Assert.Equal(["buildx", "version"], check.Arguments),
+            context => Assert.Equal(["context", "show"], context.Arguments),
+            build => Assert.Equal(
+                ["buildx", "build", "--file", "Dockerfile", "--tag", "myapp:latest", "--builder", "desktop-linux",
+                    GetNormalizedContextPath()],
+                build.Arguments));
+    }
+
+    [Theory]
+    [InlineData("desktop-linux\nother-context\n")]
+    [InlineData("desktop-linux\r\nother-context\r\n")]
+    [InlineData("desktop-linux\rother-context\r")]
+    public async Task BuildImageAsync_LocalImageRejectsMultipleActiveContexts(string output)
+    {
+        var processRunner = new TestProcessRunner();
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Stdout(Encoding.UTF8.GetBytes(output)), Emit<byte>.Exited(0)]));
+        // If validation regresses, let the build succeed so the failure reports the missing rejection.
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
+        var runtime = new DockerContainerRuntime(NullLogger<DockerContainerRuntime>.Instance, processRunner);
+        var options = new ContainerImageBuildOptions
+        {
+            ImageName = "myapp",
+            Tag = "latest",
+            RequiresLocalImageStore = true
+        };
+
+        var exception = await Assert.ThrowsAsync<DistributedApplicationException>(() => BuildImageAsync(runtime, options));
+
+        Assert.Equal("Docker did not report exactly one active context.", exception.Message);
+        Assert.Collection(
+            processRunner.Commands,
+            check => Assert.Equal(["buildx", "version"], check.Arguments),
+            context => Assert.Equal(["context", "show"], context.Arguments));
     }
 
     [Fact]
     public async Task BuildImageAsync_LocalImageWithEmptyActiveContextFails()
     {
         var processRunner = new TestProcessRunner();
-        processRunner.EnqueueResult();
-        processRunner.EnqueueResult(output: [" "]);
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Stdout(" \n"u8), Emit<byte>.Exited(0)]));
         var runtime = new DockerContainerRuntime(
             NullLogger<DockerContainerRuntime>.Instance,
             processRunner);
@@ -314,17 +416,17 @@ public class DockerContainerRuntimeTests
 
         Assert.Equal("Docker did not report exactly one active context.", exception.Message);
         Assert.Collection(
-            processRunner.ProcessSpecs,
-            check => Assert.Equal("buildx version", check.Arguments),
-            context => Assert.Equal("context show", context.Arguments));
+            processRunner.Commands,
+            check => Assert.Equal(["buildx", "version"], check.Arguments),
+            context => Assert.Equal(["context", "show"], context.Arguments));
     }
 
     [Fact]
     public async Task BuildImageAsync_LocalImageContextDiscoveryFailureIsReported()
     {
         var processRunner = new TestProcessRunner();
-        processRunner.EnqueueResult();
-        processRunner.EnqueueResult(exitCode: 42, error: ["context failed"]);
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Stderr("context failed\n"u8), Emit<byte>.Exited(42)]));
         var runtime = new DockerContainerRuntime(
             NullLogger<DockerContainerRuntime>.Instance,
             processRunner);
@@ -342,9 +444,9 @@ public class DockerContainerRuntimeTests
             $"Docker context discovery for 'myapp:latest' failed with exit code 42.{Environment.NewLine}context failed",
             exception.Message);
         Assert.Collection(
-            processRunner.ProcessSpecs,
-            check => Assert.Equal("buildx version", check.Arguments),
-            context => Assert.Equal("context show", context.Arguments));
+            processRunner.Commands,
+            check => Assert.Equal(["buildx", "version"], check.Arguments),
+            context => Assert.Equal(["context", "show"], context.Arguments));
     }
 
     [Fact]
@@ -370,6 +472,7 @@ public class DockerContainerRuntimeTests
             "Docker cannot export an OCI archive when container-file layering references locally built images. " +
             "Use ContainerImageFormat.Docker for this archive or run the publish with Podman.",
             exception.Message);
+        Assert.Empty(processRunner.Commands);
         Assert.Empty(processRunner.ProcessSpecs);
     }
 
@@ -393,6 +496,7 @@ public class DockerContainerRuntimeTests
             () => BuildImageAsync(runtime, options));
 
         Assert.Equal("options", exception.ParamName);
+        Assert.Empty(processRunner.Commands);
         Assert.Empty(processRunner.ProcessSpecs);
     }
 
@@ -400,8 +504,8 @@ public class DockerContainerRuntimeTests
     public async Task BuildImageAsync_WithoutArchiveUsesDefaultBuilder()
     {
         var processRunner = new TestProcessRunner();
-        processRunner.EnqueueResult();
-        processRunner.EnqueueResult();
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
         var runtime = new DockerContainerRuntime(
             NullLogger<DockerContainerRuntime>.Instance,
             processRunner);
@@ -422,12 +526,12 @@ public class DockerContainerRuntimeTests
             cancellationToken: CancellationToken.None);
 
         Assert.Collection(
-            processRunner.ProcessSpecs,
-            check => Assert.Equal("buildx version", check.Arguments),
+            processRunner.Commands,
+            check => Assert.Equal(["buildx", "version"], check.Arguments),
             build => Assert.Equal(
                 ["buildx", "build", "--file", "Dockerfile", "--tag", "myapp:latest",
                     "--output", "type=docker", GetNormalizedContextPath()],
-                build.ArgumentList));
+                build.Arguments));
     }
 
     private static Task BuildImageAsync(
@@ -444,14 +548,11 @@ public class DockerContainerRuntimeTests
             cancellationToken: CancellationToken.None);
     }
 
-    private static string AssertAndGetBuilderName(object? argumentsValue)
+    private static string AssertAndGetBuilderName(IReadOnlyList<string> arguments)
     {
-        var arguments = Assert.IsType<string>(argumentsValue);
-        const string prefix = "buildx create --name \"";
-        const string suffix = "\" --driver docker-container";
-        Assert.StartsWith(prefix, arguments, StringComparison.Ordinal);
-        Assert.EndsWith(suffix, arguments, StringComparison.Ordinal);
-        var builderName = arguments[prefix.Length..^suffix.Length];
+        Assert.Equal(6, arguments.Count);
+        var builderName = arguments[3];
+        Assert.Equal(["buildx", "create", "--name", builderName, "--driver", "docker-container"], arguments);
         Assert.StartsWith("aspire-", builderName, StringComparison.Ordinal);
         Assert.True(Guid.TryParseExact(builderName["aspire-".Length..], "N", out _));
         return builderName;

@@ -8,6 +8,7 @@
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Dcp;
 using Aspire.Hosting.Publishing;
+using Aspire.Hosting.Testing;
 using Aspire.Hosting.Tests.Utils;
 using Aspire.Hosting.Utils;
 using Aspire.Shared;
@@ -37,6 +38,7 @@ public class WslcDotnetPublishingTests(ITestOutputHelper output)
             () => manager.BuildImageAsync(resource.Resource, TestContext.Current.CancellationToken));
 
         Assert.Contains("WSLc does not support loading multi-platform .NET SDK images into its local image store", exception.Message);
+        Assert.Empty(runner.Commands);
         Assert.Empty(runner.ProcessSpecs);
     }
 
@@ -69,6 +71,7 @@ public class WslcDotnetPublishingTests(ITestOutputHelper output)
             () => manager.BuildImageAsync(resource.Resource, TestContext.Current.CancellationToken));
 
         Assert.Contains("WSLc does not support the platform-selected Dockerfile build required by PublishWithContainerFiles", exception.Message);
+        Assert.Empty(runner.Commands);
         Assert.Empty(runner.ProcessSpecs);
     }
 
@@ -80,6 +83,8 @@ public class WslcDotnetPublishingTests(ITestOutputHelper output)
     {
         using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
         var runner = new TestProcessRunner();
+        runner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
+        runner.EnqueueResult(exitCode: 0);
         builder.Services.AddSingleton<IProcessRunner>(runner);
         builder.Services.Configure<DcpOptions>(options => options.ContainerRuntime = KnownContainerRuntimes.Wslc);
         var resource = builder.AddDotnetProject("program", "program.csproj", options => options.ExcludeLaunchProfile = true)
@@ -89,29 +94,24 @@ public class WslcDotnetPublishingTests(ITestOutputHelper output)
 
         await manager.BuildImageAsync(resource.Resource, TestContext.Current.CancellationToken);
 
-        Assert.Collection(runner.ProcessSpecs,
-            spec =>
-            {
-                Assert.Equal(KnownContainerRuntimes.Wslc, spec.ExecutablePath);
-                Assert.Equal("container ls -n 1", spec.Arguments);
-            },
-            spec =>
-            {
-                Assert.Equal("dotnet", spec.ExecutablePath);
-                var expectedArguments = new List<string>
-                {
-                    "publish", resource.Resource.GetProjectMetadata().ProjectPath,
-                    "--configuration", "Release", "/t:PublishContainer",
-                    "--property:ContainerRepository=program", "--property:ContainerImageTag=latest",
-                    "--property:LocalRegistry=Wslc"
-                };
-                if (platform is not null)
-                {
-                    var rid = platform == ContainerTargetPlatform.LinuxArm64 ? "linux-arm64" : "linux-x64";
-                    expectedArguments.AddRange([$"--property:RuntimeIdentifier={rid}", $"--property:ContainerRuntimeIdentifier={rid}"]);
-                }
-                Assert.Equal(expectedArguments, spec.ArgumentList);
-            });
+        var healthCommand = Assert.Single(runner.Commands);
+        Assert.Equal(KnownContainerRuntimes.Wslc, healthCommand.ExecutablePath);
+        Assert.Equal(["container", "ls", "-n", "1"], healthCommand.Arguments);
+        var spec = Assert.Single(runner.ProcessSpecs);
+        Assert.Equal("dotnet", spec.ExecutablePath);
+        var expectedArguments = new List<string>
+        {
+            "publish", resource.Resource.GetProjectMetadata().ProjectPath,
+            "--configuration", "Release", "/t:PublishContainer",
+            "--property:ContainerRepository=program", "--property:ContainerImageTag=latest",
+            "--property:LocalRegistry=Wslc"
+        };
+        if (platform is not null)
+        {
+            var rid = platform == ContainerTargetPlatform.LinuxArm64 ? "linux-arm64" : "linux-x64";
+            expectedArguments.AddRange([$"--property:RuntimeIdentifier={rid}", $"--property:ContainerRuntimeIdentifier={rid}"]);
+        }
+        Assert.Equal(expectedArguments, spec.ArgumentList);
     }
 
     [Theory]
@@ -124,6 +124,7 @@ public class WslcDotnetPublishingTests(ITestOutputHelper output)
         using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
         using var workspace = TemporaryWorkspace.Create(output);
         var runner = new TestProcessRunner();
+        runner.EnqueueResult(exitCode: 0);
         builder.Services.AddSingleton<IProcessRunner>(runner);
         builder.Services.Configure<DcpOptions>(options => options.ContainerRuntime = KnownContainerRuntimes.Wslc);
         var resource = builder.AddDotnetProject("program", "program.csproj", options => options.ExcludeLaunchProfile = true)
@@ -139,6 +140,7 @@ public class WslcDotnetPublishingTests(ITestOutputHelper output)
 
         await manager.BuildImagesAsync([resource.Resource], TestContext.Current.CancellationToken);
 
+        Assert.Empty(runner.Commands);
         var spec = Assert.Single(runner.ProcessSpecs);
         Assert.Equal("dotnet", spec.ExecutablePath);
         var expectedArguments = new List<string>
