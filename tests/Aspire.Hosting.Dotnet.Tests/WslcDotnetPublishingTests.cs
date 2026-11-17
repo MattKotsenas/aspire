@@ -84,7 +84,7 @@ public class WslcDotnetPublishingTests(ITestOutputHelper output)
         using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
         var runner = new TestProcessRunner();
         runner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
-        runner.EnqueueResult(exitCode: 0);
+        runner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
         builder.Services.AddSingleton<IProcessRunner>(runner);
         builder.Services.Configure<DcpOptions>(options => options.ContainerRuntime = KnownContainerRuntimes.Wslc);
         var resource = builder.AddDotnetProject("program", "program.csproj", options => options.ExcludeLaunchProfile = true)
@@ -94,11 +94,12 @@ public class WslcDotnetPublishingTests(ITestOutputHelper output)
 
         await manager.BuildImageAsync(resource.Resource, TestContext.Current.CancellationToken);
 
-        var healthCommand = Assert.Single(runner.Commands);
+        Assert.Equal(2, runner.Commands.Count);
+        var healthCommand = runner.Commands[0];
         Assert.Equal(KnownContainerRuntimes.Wslc, healthCommand.ExecutablePath);
         Assert.Equal(["container", "ls", "-n", "1"], healthCommand.Arguments);
-        var spec = Assert.Single(runner.ProcessSpecs);
-        Assert.Equal("dotnet", spec.ExecutablePath);
+        var command = runner.Commands[1];
+        Assert.Equal("dotnet", command.ExecutablePath);
         var expectedArguments = new List<string>
         {
             "publish", resource.Resource.GetProjectMetadata().ProjectPath,
@@ -111,7 +112,7 @@ public class WslcDotnetPublishingTests(ITestOutputHelper output)
             var rid = platform == ContainerTargetPlatform.LinuxArm64 ? "linux-arm64" : "linux-x64";
             expectedArguments.AddRange([$"--property:RuntimeIdentifier={rid}", $"--property:ContainerRuntimeIdentifier={rid}"]);
         }
-        Assert.Equal(expectedArguments, spec.ArgumentList);
+        Assert.Equal(expectedArguments, command.Arguments);
     }
 
     [Theory]
@@ -124,7 +125,7 @@ public class WslcDotnetPublishingTests(ITestOutputHelper output)
         using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
         using var workspace = TemporaryWorkspace.Create(output);
         var runner = new TestProcessRunner();
-        runner.EnqueueResult(exitCode: 0);
+        runner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
         builder.Services.AddSingleton<IProcessRunner>(runner);
         builder.Services.Configure<DcpOptions>(options => options.ContainerRuntime = KnownContainerRuntimes.Wslc);
         var resource = builder.AddDotnetProject("program", "program.csproj", options => options.ExcludeLaunchProfile = true)
@@ -140,9 +141,8 @@ public class WslcDotnetPublishingTests(ITestOutputHelper output)
 
         await manager.BuildImagesAsync([resource.Resource], TestContext.Current.CancellationToken);
 
-        Assert.Empty(runner.Commands);
-        var spec = Assert.Single(runner.ProcessSpecs);
-        Assert.Equal("dotnet", spec.ExecutablePath);
+        var command = Assert.Single(runner.Commands);
+        Assert.Equal("dotnet", command.ExecutablePath);
         var expectedArguments = new List<string>
         {
             "publish",
@@ -169,6 +169,6 @@ public class WslcDotnetPublishingTests(ITestOutputHelper output)
         {
             expectedArguments.AddRange(["--property:RuntimeIdentifier=linux-x64", "--property:ContainerRuntimeIdentifier=linux-x64"]);
         }
-        Assert.Equal(expectedArguments, spec.ArgumentList);
+        Assert.Equal(expectedArguments, command.Arguments);
     }
 }

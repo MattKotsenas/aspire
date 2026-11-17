@@ -9,6 +9,7 @@
 using Aspire.Hosting.Pipelines;
 using Aspire.Hosting.Dcp;
 using Aspire.Hosting.Publishing;
+using Aspire.Hosting.Testing;
 using Aspire.Hosting.Tests.Publishing;
 using Aspire.Hosting.Tests.Utils;
 using Aspire.Hosting.Utils;
@@ -230,7 +231,7 @@ public class DotnetProgramPublishingTests(ITestOutputHelper outputHelper)
         var imageManager = app.Services.GetRequiredService<IResourceContainerImageManager>();
         await imageManager.BuildImageAsync(resource.Resource, TestContext.Current.CancellationToken);
         await imageManager.BuildImagesAsync([resource.Resource], TestContext.Current.CancellationToken);
-        Assert.Empty(processRunner.ProcessSpecs);
+        Assert.Empty(processRunner.Commands);
         Assert.Equal(0, runtime.ResolveAsyncCallCount);
     }
 
@@ -279,7 +280,7 @@ public class DotnetProgramPublishingTests(ITestOutputHelper outputHelper)
         Assert.Equal(expectedMessage, pipelineException.Message);
         Assert.Equal(expectedMessage, directException.Message);
         Assert.Equal(expectedMessage, batchException.Message);
-        Assert.Empty(processRunner.ProcessSpecs);
+        Assert.Empty(processRunner.Commands);
         Assert.Equal(0, runtime.ResolveAsyncCallCount);
     }
 
@@ -326,6 +327,11 @@ public class DotnetProgramPublishingTests(ITestOutputHelper outputHelper)
                 context.Destination = ContainerImageDestination.Archive;
                 context.OutputPath = Path.Combine(workspace.WorkspaceRoot.FullName, "program.tar");
             }));
+        if (!containerFiles)
+        {
+            processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
+        }
+
         if (containerFiles)
         {
             var source = builder.AddContainer("assets", "assets-image")
@@ -344,13 +350,13 @@ public class DotnetProgramPublishingTests(ITestOutputHelper outputHelper)
                 () => ExecuteBuildPipelineAsync(app, "build-program")).DefaultTimeout();
             Assert.Equal("Docker is not running. Start Docker and try again.", exception.Message);
             Assert.True(runtime.WasHealthCheckCalled);
-            Assert.Empty(processRunner.ProcessSpecs);
+            Assert.Empty(processRunner.Commands);
         }
         else
         {
             await ExecuteBuildPipelineAsync(app, "build-program").DefaultTimeout();
             Assert.False(runtime.WasHealthCheckCalled);
-            Assert.Equal("publish", Assert.Single(processRunner.ProcessSpecs).ArgumentList![0]);
+            Assert.Equal("publish", Assert.Single(processRunner.Commands).Arguments[0]);
         }
 
         Assert.Equal(1, callbackCount);
@@ -366,6 +372,11 @@ public class DotnetProgramPublishingTests(ITestOutputHelper outputHelper)
         using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
         var processRunner = new TestProcessRunner();
         builder.Services.AddSingleton<IProcessRunner>(processRunner);
+        for (var index = 0; index < publishCount; index++)
+        {
+            processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
+        }
+
         var running = 0;
         var runtime = new FakeContainerRuntime(name: "Docker")
         {
@@ -393,8 +404,8 @@ public class DotnetProgramPublishingTests(ITestOutputHelper outputHelper)
         await build.DefaultTimeout();
 
         Assert.Equal(2, runtime.CheckIfRunningCallCount);
-        Assert.Equal(publishCount, processRunner.ProcessSpecs.Count);
-        Assert.All(processRunner.ProcessSpecs, spec => Assert.Equal("publish", spec.ArgumentList![0]));
+        Assert.Equal(publishCount, processRunner.Commands.Count);
+        Assert.All(processRunner.Commands, command => Assert.Equal("publish", command.Arguments[0]));
         Assert.False(interactions.Interactions.Reader.TryRead(out _));
     }
 

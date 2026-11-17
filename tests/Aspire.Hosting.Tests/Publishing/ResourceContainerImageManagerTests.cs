@@ -5,10 +5,12 @@
 #pragma warning disable ASPIRECONTAINERRUNTIME001
 #pragma warning disable ASPIREPROJECTS001
 
+using System.Runtime.CompilerServices;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using Aspire.Hosting.Dcp.Process;
 using Aspire.Hosting.Publishing;
+using Aspire.Hosting.Testing;
 using Aspire.Hosting.Tests.Utils;
 using Aspire.Hosting.Utils;
 using Aspire.TestUtilities;
@@ -824,7 +826,7 @@ public class ResourceContainerImageBuilderTests(ITestOutputHelper output)
             "Resource 'program' has Destination set to Archive but OutputPath is not configured. " +
             "Please set the OutputPath in the container build options.",
             exception.Message);
-        Assert.Empty(processRunner.ProcessSpecs);
+        Assert.Empty(processRunner.Commands);
         Assert.False(containerRuntime.WasHealthCheckCalled);
     }
 
@@ -915,7 +917,7 @@ public class ResourceContainerImageBuilderTests(ITestOutputHelper output)
             "is reserved by Aspire container publishing because it controls the image artifact used by downstream steps. " +
             "Configure container publishing with WithContainerBuildOptions instead.",
             exception.Message);
-        Assert.Empty(processRunner.ProcessSpecs);
+        Assert.Empty(processRunner.Commands);
     }
 
     [Fact]
@@ -924,8 +926,8 @@ public class ResourceContainerImageBuilderTests(ITestOutputHelper output)
         using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
         using var workspace = TemporaryWorkspace.Create(output);
         var processRunner = new TestProcessRunner();
-        processRunner.EnqueueResult();
-        processRunner.EnqueueResult();
+        processRunner.Enqueue(PublishWithResponseFileAsync());
+        processRunner.Enqueue(PublishWithResponseFileAsync());
         builder.Services.AddSingleton<IProcessRunner>(processRunner);
         builder.Services.AddFakeContainerRuntime(new FakeContainerRuntime());
 
@@ -953,16 +955,33 @@ public class ResourceContainerImageBuilderTests(ITestOutputHelper output)
 
         Assert.Equal(2, callbackCount);
         Assert.Collection(
-            processRunner.ProcessSpecs,
+            processRunner.Commands,
             first => AssertPublishProcess(first, "value-1"),
             second => AssertPublishProcess(second, "value-2"));
 
-        static void AssertPublishProcess(ProcessSpec processSpec, string expectedValue)
+        async IAsyncEnumerable<ProcessEvent<ReadOnlyMemory<byte>>> PublishWithResponseFileAsync(
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
-            Assert.Equal(Path.GetDirectoryName(processSpec.ArgumentList![1]), processSpec.WorkingDirectory);
-            Assert.Equal(expectedValue, processSpec.EnvironmentVariables["BUILD_FLAVOR"]);
+            var command = processRunner.Commands[^1];
+            var responseFileArgument = Assert.Single(command.Arguments, static argument => argument.StartsWith('@'));
+            Assert.True(File.Exists(responseFileArgument[1..]));
+            var publish = new FakeEventStream<byte>([Emit<byte>.Exited(0)]);
+            await foreach (var item in publish.WithCancellation(cancellationToken))
+            {
+                yield return item;
+            }
+
+            // The build context must keep its response file alive through process disposal.
+            Assert.Equal(1, publish.DisposeCount);
+            Assert.True(File.Exists(responseFileArgument[1..]));
+        }
+
+        static void AssertPublishProcess(ProcessCommand processCommand, string expectedValue)
+        {
+            Assert.Equal(Path.GetDirectoryName(processCommand.Arguments[1]), processCommand.WorkingDirectory);
+            Assert.Equal(expectedValue, processCommand.EnvironmentVariables["BUILD_FLAVOR"]);
             var responseFileArgument = Assert.Single(
-                processSpec.ArgumentList,
+                processCommand.Arguments,
                 static argument => argument.StartsWith('@'));
             Assert.False(File.Exists(responseFileArgument[1..]));
         }
@@ -976,8 +995,8 @@ public class ResourceContainerImageBuilderTests(ITestOutputHelper output)
         using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
         using var workspace = TemporaryWorkspace.Create(output);
         var processRunner = new TestProcessRunner();
-        processRunner.EnqueueResult();
-        processRunner.EnqueueResult(output: ["/app"]);
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Stdout("/app"u8), Emit<byte>.StdoutCompleted(), Emit<byte>.Exited(0)]));
         builder.Services.AddSingleton<IProcessRunner>(processRunner);
         var containerRuntime = new FakeContainerRuntime(name: "Docker");
         builder.Services.AddFakeContainerRuntime(containerRuntime);
@@ -1040,15 +1059,15 @@ public class ResourceContainerImageBuilderTests(ITestOutputHelper output)
             CancellationToken.None);
         Assert.Equal(archivePath, resolvedArchivePath);
         Assert.Collection(
-            processRunner.ProcessSpecs,
+            processRunner.Commands,
             publish => Assert.DoesNotContain(
-                publish.ArgumentList!,
+                publish.Arguments,
                 static argument => argument.StartsWith("--property:ContainerArchiveOutputPath=", StringComparison.Ordinal)),
             workingDirectory => Assert.Contains(
                 "-getProperty:ContainerWorkingDirectory",
-                workingDirectory.ArgumentList!));
+                workingDirectory.Arguments));
         var sdkTagArgument = Assert.Single(
-            processRunner.ProcessSpecs[0].ArgumentList!,
+            processRunner.Commands[0].Arguments,
             static argument => argument.StartsWith("--property:ContainerImageTag=", StringComparison.Ordinal));
         Assert.StartsWith("--property:ContainerImageTag=aspire-sdk-", sdkTagArgument);
         var sdkTag = sdkTagArgument["--property:ContainerImageTag=".Length..];
@@ -1066,8 +1085,8 @@ public class ResourceContainerImageBuilderTests(ITestOutputHelper output)
         using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
         using var workspace = TemporaryWorkspace.Create(output);
         var processRunner = new TestProcessRunner();
-        processRunner.EnqueueResult();
-        processRunner.EnqueueResult(output: ["/app"]);
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Stdout("/app"u8), Emit<byte>.StdoutCompleted(), Emit<byte>.Exited(0)]));
         builder.Services.AddSingleton<IProcessRunner>(processRunner);
         builder.Services.AddFakeContainerRuntime(new FakeContainerRuntime(name: "Docker"));
 
@@ -1103,48 +1122,62 @@ public class ResourceContainerImageBuilderTests(ITestOutputHelper output)
     [InlineData(true)]
     public async Task BuildImageAsync_CrossOperatingSystemFileAppAotFailureAddsGuidance(bool truncateDiagnostic)
     {
-        using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
-        using var workspace = TemporaryWorkspace.Create(output);
-        var processRunner = new TestProcessRunner();
-        var outputEvents = new List<TestProcessOutput>
-        {
-            new(IsError: true, "error : Cross-OS native compilation is not supported.")
-        };
-        if (truncateDiagnostic)
-        {
-            outputEvents.AddRange(Enumerable.Range(0, ProcessSpec.DefaultRetainedOutputLineCount)
-                .Select(index => new TestProcessOutput(IsError: false, $"Build output {index}")));
-        }
+        const int retainedLineCount = 50;
+        await VerifyStreamAsync(diagnosticOnStderr: false);
+        await VerifyStreamAsync(diagnosticOnStderr: true);
 
-        processRunner.EnqueueResult(exitCode: 1, outputEvents: outputEvents);
-        builder.Services.AddSingleton<IProcessRunner>(processRunner);
-        builder.Services.AddFakeContainerRuntime(new FakeContainerRuntime());
-
-        var targetPlatform = OperatingSystem.IsWindows()
-            ? ContainerTargetPlatform.LinuxAmd64
-            : ContainerTargetPlatform.WindowsAmd64;
-        var resource = builder.AddResource(new ProjectResource("file-app"))
-            .WithAnnotation(new TestProjectMetadata(Path.Combine(workspace.WorkspaceRoot.FullName, "app.cs")))
-            .WithContainerBuildOptions(context =>
+        async Task VerifyStreamAsync(bool diagnosticOnStderr)
+        {
+            using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
+            using var workspace = TemporaryWorkspace.Create(output);
+            var processRunner = new TestProcessRunner();
+            var outputEvents = new List<(bool IsError, string Value)>
             {
-                context.Destination = ContainerImageDestination.Archive;
-                context.ImageFormat = ContainerImageFormat.Oci;
-                context.OutputPath = Path.Combine(workspace.WorkspaceRoot.FullName, "app.tar");
-                context.TargetPlatform = targetPlatform;
-            });
-        using var app = builder.Build();
-        var imageBuilder = app.Services.GetRequiredService<IResourceContainerImageManager>();
+                new(diagnosticOnStderr, "error : Cross-OS native compilation is not supported.")
+            };
+            if (truncateDiagnostic)
+            {
+                outputEvents.AddRange(Enumerable.Range(0, retainedLineCount)
+                    .Select(index => (IsError: !diagnosticOnStderr, Value: $"Build output {index}")));
+                Assert.True(outputEvents.Count > retainedLineCount);
+            }
 
-        var exception = await Assert.ThrowsAsync<ProcessFailedException>(
-            () => imageBuilder.BuildImageAsync(resource.Resource));
+            var steps = outputEvents.Select(line => line.IsError
+                ? (StreamStep<byte>)Emit<byte>.Stderr(Encoding.UTF8.GetBytes(line.Value + "\n"))
+                : Emit<byte>.Stdout(Encoding.UTF8.GetBytes(line.Value + "\n"))).ToList();
+            steps.Add(Emit<byte>.StdoutCompleted());
+            steps.Add(Emit<byte>.StderrCompleted());
+            steps.Add(Emit<byte>.Exited(1));
+            processRunner.Enqueue(new FakeEventStream<byte>(steps));
+            builder.Services.AddSingleton<IProcessRunner>(processRunner);
+            builder.Services.AddFakeContainerRuntime(new FakeContainerRuntime());
 
-        Assert.Contains("File-based apps enable PublishAot by default.", exception.Message);
-        Assert.Contains("#:property PublishAot=false", exception.Message);
-        Assert.Equal(
-            outputEvents.TakeLast(ProcessSpec.DefaultRetainedOutputLineCount).Select(static line => line.Value),
-            exception.ProcessOutput);
-        Assert.Equal(outputEvents.Count, exception.TotalProcessOutputLineCount);
-        Assert.Single(processRunner.ProcessSpecs);
+            var targetPlatform = OperatingSystem.IsWindows()
+                ? ContainerTargetPlatform.LinuxAmd64
+                : ContainerTargetPlatform.WindowsAmd64;
+            var resource = builder.AddResource(new ProjectResource("file-app"))
+                .WithAnnotation(new TestProjectMetadata(Path.Combine(workspace.WorkspaceRoot.FullName, "app.cs")))
+                .WithContainerBuildOptions(context =>
+                {
+                    context.Destination = ContainerImageDestination.Archive;
+                    context.ImageFormat = ContainerImageFormat.Oci;
+                    context.OutputPath = Path.Combine(workspace.WorkspaceRoot.FullName, "app.tar");
+                    context.TargetPlatform = targetPlatform;
+                });
+            using var app = builder.Build();
+            var imageBuilder = app.Services.GetRequiredService<IResourceContainerImageManager>();
+
+            var exception = await Assert.ThrowsAsync<ProcessFailedException>(
+                () => imageBuilder.BuildImageAsync(resource.Resource));
+
+            Assert.Contains("File-based apps enable PublishAot by default.", exception.Message);
+            Assert.Contains("#:property PublishAot=false", exception.Message);
+            Assert.Equal(
+                outputEvents.TakeLast(retainedLineCount).Select(static line => line.Value),
+                exception.ProcessOutput);
+            Assert.Equal(outputEvents.Count, exception.TotalProcessOutputLineCount);
+            Assert.Single(processRunner.Commands);
+        }
     }
 
     [Theory]
@@ -1157,7 +1190,12 @@ public class ResourceContainerImageBuilderTests(ITestOutputHelper output)
         using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
         using var workspace = TemporaryWorkspace.Create(output);
         var processRunner = new TestProcessRunner();
-        processRunner.EnqueueResult(exitCode: 42, error: [error]);
+        processRunner.Enqueue(new FakeEventStream<byte>(
+        [
+            Emit<byte>.Stderr(Encoding.UTF8.GetBytes(error)),
+            Emit<byte>.StderrCompleted(),
+            Emit<byte>.Exited(42)
+        ]));
         builder.Services.AddSingleton<IProcessRunner>(processRunner);
         builder.Services.AddFakeContainerRuntime(new FakeContainerRuntime());
 
@@ -1186,7 +1224,117 @@ public class ResourceContainerImageBuilderTests(ITestOutputHelper output)
             $"Failed to build container image for resource 'program' from project '{projectPath}' with exit code 42." +
             Environment.NewLine + exception.GetFormattedOutput(),
             exception.Message);
-        Assert.Single(processRunner.ProcessSpecs);
+        Assert.Single(processRunner.Commands);
+    }
+
+    [Fact]
+    public async Task BuildImageAsync_PublishRetainsNonemptyDiagnosticTailAcrossStreams()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
+        using var workspace = TemporaryWorkspace.Create(output);
+        var runner = new TestProcessRunner();
+        var lines = Enumerable.Range(0, 49).Select(index => $"Build output {index}").ToArray();
+        // Empty records do not count toward the tail. A whitespace-only record and an
+        // unterminated record on the other stream bring the nonempty total to 51.
+        var text = Encoding.UTF8.GetBytes(string.Join("\r\n", lines) + "\r\n\r\n \t\n");
+        var script = new FakeEventStream<byte>(
+        [
+            Emit<byte>.Stdout(text),
+            Emit<byte>.Stderr("partial-final"u8),
+            Emit<byte>.StdoutCompleted(),
+            Emit<byte>.StderrCompleted(),
+            Emit<byte>.Exited(23)
+        ]);
+        runner.Enqueue(script);
+        builder.Services.AddSingleton<IProcessRunner>(runner);
+        builder.Services.AddFakeContainerRuntime(new FakeContainerRuntime());
+        var resource = builder.AddResource(new ProjectResource("program"))
+            .WithAnnotation(new TestProjectMetadata(Path.Combine(workspace.WorkspaceRoot.FullName, "program.csproj")))
+            .WithContainerBuildOptions(context =>
+            {
+                context.Destination = ContainerImageDestination.Archive;
+                context.OutputPath = Path.Combine(workspace.WorkspaceRoot.FullName, "program.tar");
+            });
+        using var app = builder.Build();
+        var manager = app.Services.GetRequiredService<IResourceContainerImageManager>();
+
+        var exception = await Assert.ThrowsAsync<ProcessFailedException>(
+            () => manager.BuildImageAsync(resource.Resource, TestContext.Current.CancellationToken));
+
+        Assert.Equal(23, exception.ExitCode);
+        Assert.Equal(51, exception.TotalProcessOutputLineCount);
+        Assert.Equal([.. lines.Skip(1), " \t", "partial-final"], exception.ProcessOutput);
+        Assert.Single(runner.Commands);
+        Assert.Equal(1, script.DisposeCount);
+    }
+
+    [Theory]
+    [InlineData("trailing-whitespace", "/last")]
+    [InlineData("whitespace", "/app")]
+    [InlineData("nonzero", "/app")]
+    [InlineData("failure", "/app")]
+    public async Task BuildImageAsync_ContainerWorkingDirectorySelectsOutputOrFallsBack(string scenario, string expectedDirectory)
+    {
+        using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
+        using var workspace = TemporaryWorkspace.Create(output);
+        var runner = new TestProcessRunner();
+        runner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
+        var steps = new List<StreamStep<byte>>
+        {
+            Emit<byte>.Stderr("/stderr-must-not-be-used\n"u8)
+        };
+        switch (scenario)
+        {
+            case "trailing-whitespace":
+                steps.Add(Emit<byte>.Stdout(" /first \r\n\r\n \t\r\n /last \t\r\n \t"u8));
+                break;
+            case "whitespace":
+                steps.Add(Emit<byte>.Stdout("\r\n \t"u8));
+                break;
+            case "nonzero" or "failure":
+                steps.Add(Emit<byte>.Stdout("/value-before-failure"u8));
+                break;
+        }
+        steps.Add(Emit<byte>.StdoutCompleted());
+        steps.Add(Emit<byte>.StderrCompleted());
+        if (scenario == "failure")
+        {
+            steps.Add(Emit<byte>.Fail(new IOException("query output failed")));
+        }
+        else
+        {
+            steps.Add(Emit<byte>.Exited(scenario == "nonzero" ? 7 : 0));
+        }
+
+        var query = new FakeEventStream<byte>(steps);
+        runner.Enqueue(query);
+        builder.Services.AddSingleton<IProcessRunner>(runner);
+        var runtime = new FakeContainerRuntime(name: "Docker");
+        builder.Services.AddFakeContainerRuntime(runtime);
+        var source = builder.AddContainer("assets", "assets-image")
+            .WithAnnotation(new ContainerFilesSourceAnnotation { SourcePath = "/assets" });
+        var resource = builder.AddResource(new ProjectResource("program"))
+            .WithAnnotation(new TestProjectMetadata(Path.Combine(workspace.WorkspaceRoot.FullName, "program.csproj")))
+            .WithAnnotation(new ContainerFilesDestinationAnnotation
+            {
+                Source = source.Resource,
+                DestinationPath = "wwwroot"
+            });
+        string[] copyInstructions = [];
+        runtime.BuildImageAsyncCallback = async (_, path, _, _, _, _, cancellationToken) =>
+        {
+            copyInstructions = (await File.ReadAllLinesAsync(path, cancellationToken))
+                .Where(static line => line.StartsWith("COPY ", StringComparison.Ordinal)).ToArray();
+        };
+        using var app = builder.Build();
+        var manager = app.Services.GetRequiredService<IResourceContainerImageManager>();
+
+        await manager.BuildImageAsync(resource.Resource, TestContext.Current.CancellationToken);
+
+        Assert.Equal([$"COPY --from=assets_stage /assets {expectedDirectory}/wwwroot"], copyInstructions);
+        Assert.Single(runtime.BuildImageCalls);
+        Assert.Equal(2, runner.Commands.Count);
+        Assert.Equal(1, query.DisposeCount);
     }
 
     [Theory]
@@ -1197,8 +1345,8 @@ public class ResourceContainerImageBuilderTests(ITestOutputHelper output)
         using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
         using var workspace = TemporaryWorkspace.Create(output);
         var processRunner = new TestProcessRunner();
-        processRunner.EnqueueResult();
-        processRunner.EnqueueResult(output: ["/release-app"]);
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Stdout("/release-app"u8), Emit<byte>.StdoutCompleted(), Emit<byte>.Exited(0)]));
         builder.Services.AddSingleton<IProcessRunner>(processRunner);
         var containerRuntime = new FakeContainerRuntime(name: "Docker");
         builder.Services.AddFakeContainerRuntime(containerRuntime);
@@ -1224,7 +1372,7 @@ public class ResourceContainerImageBuilderTests(ITestOutputHelper output)
         await imageBuilder.BuildImageAsync(resource.Resource);
 
         Assert.Collection(
-            processRunner.ProcessSpecs,
+            processRunner.Commands,
             publish => Assert.Equal(
                 [
                     "publish", projectPath, "--configuration", "Release", "/t:PublishContainer",
@@ -1232,7 +1380,7 @@ public class ResourceContainerImageBuilderTests(ITestOutputHelper output)
                     "--property:LocalRegistry=Docker", "--property:RuntimeIdentifier=linux-x64",
                     "--property:ContainerRuntimeIdentifier=linux-x64"
                 ],
-                publish.ArgumentList),
+                publish.Arguments),
             query =>
             {
                 Assert.Equal(Path.GetDirectoryName(projectPath), query.WorkingDirectory);
@@ -1242,7 +1390,7 @@ public class ResourceContainerImageBuilderTests(ITestOutputHelper output)
                         "-getProperty:ContainerWorkingDirectory", "-v:q",
                         "--property:RuntimeIdentifier=linux-x64", "--property:ContainerRuntimeIdentifier=linux-x64"
                     ],
-                    query.ArgumentList);
+                    query.Arguments);
             });
         Assert.Single(containerRuntime.BuildImageCalls);
         Assert.NotNull(dockerfile);
@@ -1259,8 +1407,8 @@ public class ResourceContainerImageBuilderTests(ITestOutputHelper output)
         using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
         using var workspace = TemporaryWorkspace.Create(output);
         var processRunner = new TestProcessRunner();
-        processRunner.EnqueueResult();
-        processRunner.EnqueueResult(output: ["/release-app"]);
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Stdout("/release-app"u8), Emit<byte>.StdoutCompleted(), Emit<byte>.Exited(0)]));
         builder.Services.AddSingleton<IProcessRunner>(processRunner);
         builder.Services.AddFakeContainerRuntime(new FakeContainerRuntime(name: "Docker"));
 
@@ -1291,21 +1439,21 @@ public class ResourceContainerImageBuilderTests(ITestOutputHelper output)
             runtimeIdentifiersArgument, containerRuntimeIdentifiersArgument
         ];
         Assert.Collection(
-            processRunner.ProcessSpecs,
+            processRunner.Commands,
             publish => Assert.Equal(
                 [
                     "publish", projectPath, "--configuration", "Release", "/t:PublishContainer",
                     "--property:ContainerRepository=program", "--property:ContainerImageTag=latest",
                     "--property:LocalRegistry=Docker", .. targetPlatformArguments
                 ],
-                publish.ArgumentList),
+                publish.Arguments),
             query => Assert.Equal(
                 [
                     fileBased ? "build" : "msbuild", projectPath, "-p:Configuration=Release",
                     "-getProperty:ContainerWorkingDirectory", "-v:q",
                     .. targetPlatformArguments
                 ],
-                query.ArgumentList));
+                query.Arguments));
 
         // A fake runner cannot detect the CLI or MSBuild splitting a single argv entry on ';'.
         // Round-trip each command's emitted properties through the same command-line parser as the real build.
@@ -1345,41 +1493,44 @@ public class ResourceContainerImageBuilderTests(ITestOutputHelper output)
             probeCommand = ["msbuild", probePath];
         }
 
-        foreach (var command in processRunner.ProcessSpecs)
+        foreach (var command in processRunner.Commands)
         {
-            var propertyArguments = command.ArgumentList!
+            var propertyArguments = command.Arguments
                 .Where(static argument => argument.StartsWith("--property:", StringComparison.Ordinal));
-            var probe = new ProcessSpec(DotnetFileAppProcess.ResolvedExecutablePath)
+            var probe = new ProcessCommand(DotnetFileAppProcess.ResolvedExecutablePath)
             {
-                ArgumentList =
+                Arguments =
                 [
                     .. probeCommand, "-nologo",
                     "-getProperty:RuntimeIdentifier,ContainerRuntimeIdentifier,RuntimeIdentifiers,ContainerRuntimeIdentifiers,ContainerWorkingDirectory",
                     "-getItem:ProbeRuntimeIdentifier,ProbeContainerRuntimeIdentifier",
                     .. propertyArguments
                 ],
-                WorkingDirectory = workspace.WorkspaceRoot.FullName,
-                ThrowOnNonZeroReturnCode = true
+                WorkingDirectory = workspace.WorkspaceRoot.FullName
             };
-            var (pendingResult, processDisposable) = ProcessUtil.Run(probe);
-            await using (processDisposable)
+            using var probeTimeout = AsyncTestHelpers.CreateDefaultTimeoutTokenSource();
+            using var probeCancellation = CancellationTokenSource.CreateLinkedTokenSource(probeTimeout.Token, TestContext.Current.CancellationToken);
+            var stdout = new StringBuilder();
+            var exitCode = await new DefaultProcessRunner().CreateExecution(probe)
+                .DecodeChars(Encoding.UTF8)
+                .AppendStandardOutput(stdout)
+                .FrameLines()
+                .OnStandardError(output.WriteLine)
+                .ExecuteAsync(probeCancellation.Token);
+            Assert.Equal(0, exitCode);
+            using var document = JsonDocument.Parse(stdout.ToString());
+            var properties = document.RootElement.GetProperty("Properties");
+            Assert.Equal(string.Empty, properties.GetProperty("RuntimeIdentifier").GetString());
+            Assert.Equal(string.Empty, properties.GetProperty("ContainerRuntimeIdentifier").GetString());
+            Assert.Equal("linux-x64;linux-arm64", properties.GetProperty("RuntimeIdentifiers").GetString());
+            Assert.Equal("linux-x64;linux-arm64", properties.GetProperty("ContainerRuntimeIdentifiers").GetString());
+            Assert.Equal("/release-app", properties.GetProperty("ContainerWorkingDirectory").GetString());
+            var items = document.RootElement.GetProperty("Items");
+            foreach (var itemType in new[] { "ProbeRuntimeIdentifier", "ProbeContainerRuntimeIdentifier" })
             {
-                var result = await pendingResult.WaitAsync(TestContext.Current.CancellationToken).DefaultTimeout();
-                Assert.Equal(0, result.ExitCode);
-                using var document = JsonDocument.Parse(string.Join(Environment.NewLine, result.ProcessOutput));
-                var properties = document.RootElement.GetProperty("Properties");
-                Assert.Equal(string.Empty, properties.GetProperty("RuntimeIdentifier").GetString());
-                Assert.Equal(string.Empty, properties.GetProperty("ContainerRuntimeIdentifier").GetString());
-                Assert.Equal("linux-x64;linux-arm64", properties.GetProperty("RuntimeIdentifiers").GetString());
-                Assert.Equal("linux-x64;linux-arm64", properties.GetProperty("ContainerRuntimeIdentifiers").GetString());
-                Assert.Equal("/release-app", properties.GetProperty("ContainerWorkingDirectory").GetString());
-                var items = document.RootElement.GetProperty("Items");
-                foreach (var itemType in new[] { "ProbeRuntimeIdentifier", "ProbeContainerRuntimeIdentifier" })
-                {
-                    Assert.Equal(
-                        ["linux-x64", "linux-arm64"],
-                        items.GetProperty(itemType).EnumerateArray().Select(static item => item.GetProperty("Identity").GetString()));
-                }
+                Assert.Equal(
+                    ["linux-x64", "linux-arm64"],
+                    items.GetProperty(itemType).EnumerateArray().Select(static item => item.GetProperty("Identity").GetString()));
             }
         }
     }
@@ -1390,7 +1541,7 @@ public class ResourceContainerImageBuilderTests(ITestOutputHelper output)
         using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
         using var workspace = TemporaryWorkspace.Create(output);
         var processRunner = new TestProcessRunner();
-        processRunner.EnqueueResult();
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
         builder.Services.AddSingleton<IProcessRunner>(processRunner);
         builder.Services.AddFakeContainerRuntime(new FakeContainerRuntime(name: "Docker"));
 
@@ -1409,8 +1560,8 @@ public class ResourceContainerImageBuilderTests(ITestOutputHelper output)
 
         await imageBuilder.BuildImageAsync(resource.Resource, TestContext.Current.CancellationToken);
 
-        var publish = Assert.Single(processRunner.ProcessSpecs);
-        var propertyArguments = publish.ArgumentList!
+        var publish = Assert.Single(processRunner.Commands);
+        var propertyArguments = publish.Arguments
             .Where(static argument => argument.StartsWith("--property:", StringComparison.Ordinal))
             .ToArray();
         var outputArgument = Assert.Single(
@@ -1423,31 +1574,34 @@ public class ResourceContainerImageBuilderTests(ITestOutputHelper output)
         // or restore to verify that every emitted value survives that pass unchanged.
         var probePath = Path.Combine(workspace.WorkspaceRoot.FullName, "properties.proj");
         await File.WriteAllTextAsync(probePath, "<Project />", TestContext.Current.CancellationToken);
-        var probe = new ProcessSpec(DotnetFileAppProcess.ResolvedExecutablePath)
+        var probe = new ProcessCommand(DotnetFileAppProcess.ResolvedExecutablePath)
         {
-            ArgumentList =
+            Arguments =
             [
                 "msbuild", probePath, "-nologo",
                 "-getProperty:ContainerRepository,ContainerImageTag,LocalRegistry,ContainerArchiveOutputPath,RuntimeIdentifier,ContainerRuntimeIdentifier",
                 .. propertyArguments
             ],
-            WorkingDirectory = workspace.WorkspaceRoot.FullName,
-            ThrowOnNonZeroReturnCode = true
+            WorkingDirectory = workspace.WorkspaceRoot.FullName
         };
-        var (pendingResult, processDisposable) = ProcessUtil.Run(probe);
-        await using (processDisposable)
-        {
-            var result = await pendingResult.WaitAsync(TestContext.Current.CancellationToken).DefaultTimeout();
-            Assert.Equal(0, result.ExitCode);
-            using var document = JsonDocument.Parse(string.Join(Environment.NewLine, result.ProcessOutput));
-            var properties = document.RootElement.GetProperty("Properties");
-            Assert.Equal("program", properties.GetProperty("ContainerRepository").GetString());
-            Assert.Equal("latest", properties.GetProperty("ContainerImageTag").GetString());
-            Assert.Equal("Docker", properties.GetProperty("LocalRegistry").GetString());
-            Assert.Equal(outputPath, properties.GetProperty("ContainerArchiveOutputPath").GetString());
-            Assert.Equal("linux-x64", properties.GetProperty("RuntimeIdentifier").GetString());
-            Assert.Equal("linux-x64", properties.GetProperty("ContainerRuntimeIdentifier").GetString());
-        }
+        using var probeTimeout = AsyncTestHelpers.CreateDefaultTimeoutTokenSource();
+        using var probeCancellation = CancellationTokenSource.CreateLinkedTokenSource(probeTimeout.Token, TestContext.Current.CancellationToken);
+        var stdout = new StringBuilder();
+        var exitCode = await new DefaultProcessRunner().CreateExecution(probe)
+            .DecodeChars(Encoding.UTF8)
+            .AppendStandardOutput(stdout)
+            .FrameLines()
+            .OnStandardError(output.WriteLine)
+            .ExecuteAsync(probeCancellation.Token);
+        Assert.Equal(0, exitCode);
+        using var document = JsonDocument.Parse(stdout.ToString());
+        var properties = document.RootElement.GetProperty("Properties");
+        Assert.Equal("program", properties.GetProperty("ContainerRepository").GetString());
+        Assert.Equal("latest", properties.GetProperty("ContainerImageTag").GetString());
+        Assert.Equal("Docker", properties.GetProperty("LocalRegistry").GetString());
+        Assert.Equal(outputPath, properties.GetProperty("ContainerArchiveOutputPath").GetString());
+        Assert.Equal("linux-x64", properties.GetProperty("RuntimeIdentifier").GetString());
+        Assert.Equal("linux-x64", properties.GetProperty("ContainerRuntimeIdentifier").GetString());
     }
 
     [Fact]

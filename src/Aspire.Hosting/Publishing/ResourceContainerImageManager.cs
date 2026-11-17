@@ -8,8 +8,8 @@
 
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
+using System.Text;
 using Aspire.Hosting.ApplicationModel;
-using Aspire.Hosting.Dcp.Process;
 using Aspire.Hosting.Internal;
 using Aspire.Hosting.Utils;
 using Aspire.Shared;
@@ -632,74 +632,73 @@ internal sealed class ResourceContainerImageManager(
 
         // The SDK can emit "error : Cross-OS native compilation is not supported." before
         // other output. Observe both streams before the retained output tail truncates it.
-        var crossOsAotDiagnosticSeen = 0;
+        var crossOsAotDiagnosticSeen = false;
         void ObserveAotDiagnostic(string line)
         {
             if (line.Contains(CrossOsAotDiagnostic, StringComparison.Ordinal))
             {
-                Interlocked.Exchange(ref crossOsAotDiagnosticSeen, 1);
+                crossOsAotDiagnosticSeen = true;
             }
         }
 
-        var spec = new ProcessSpec("dotnet")
+        var command = new ProcessCommand("dotnet")
         {
-            ArgumentList = arguments,
+            Arguments = arguments,
             WorkingDirectory = buildContext.WorkingDirectory,
-            EnvironmentVariables = new Dictionary<string, string>(buildContext.Environment, buildContext.Environment.Comparer),
-            ThrowOnNonZeroReturnCode = false,
-            RetainedOutputLineCount = ProcessSpec.DefaultRetainedOutputLineCount,
-            OnOutputData = output =>
-            {
-                ObserveAotDiagnostic(output);
-                logger.LogDebug("dotnet publish {ProjectPath} (stdout): {Output}", projectMetadata.ProjectPath, output);
-            },
-            OnErrorData = error =>
-            {
-                ObserveAotDiagnostic(error);
-                logger.LogDebug("dotnet publish {ProjectPath} (stderr): {Error}", projectMetadata.ProjectPath, error);
-            }
+            EnvironmentVariables = new Dictionary<string, string>(buildContext.Environment, buildContext.Environment.Comparer)
         };
+        var diagnostics = new ProcessOutputCapture(maxRetainedLineCount: 50);
 
         logger.LogDebug(
             "Starting .NET CLI with arguments: {Arguments}",
             string.Join(" ", arguments));
 
-        var (pendingProcessResult, processDisposable) = processRunner.Run(spec);
-
-        await using (processDisposable)
-        {
-            var processResult = await pendingProcessResult
-                .WaitAsync(cancellationToken)
-                .ConfigureAwait(false);
-
-            if (processResult.ExitCode != 0)
+        var exitCode = await processRunner.CreateExecution(command)
+            .DecodeChars(Encoding.UTF8)
+            .FrameLines()
+            .OnStandardOutput(output =>
             {
-                var message =
-                    $"Failed to build container image for resource '{resource.Name}' from project '{projectMetadata.ProjectPath}' with exit code {processResult.ExitCode}.";
-                var crossOsDiagnosticPresent = Volatile.Read(ref crossOsAotDiagnosticSeen) != 0 ||
-                    processResult.ProcessOutput.Any(static line => line.Contains(CrossOsAotDiagnostic, StringComparison.Ordinal));
-                var guidance = GetFileAppAotGuidance(
-                    projectMetadata,
-                    options,
-                    crossOsDiagnosticPresent);
-                if (guidance is not null)
+                if (output.Length > 0)
                 {
-                    message = $"{message}{Environment.NewLine}{guidance}";
+                    ObserveAotDiagnostic(output);
+                    diagnostics.Add(output);
+                    logger.LogDebug("dotnet publish {ProjectPath} (stdout): {Output}", projectMetadata.ProjectPath, output);
                 }
-
-                throw new ProcessFailedException(
-                    message,
-                    processResult.ExitCode,
-                    processResult.ProcessOutput,
-                    processResult.TotalProcessOutputLineCount);
-            }
-            else
+            })
+            .OnStandardError(error =>
             {
-                logger.LogDebug(
-                    ".NET CLI completed with exit code: {ExitCode}",
-                    processResult.ExitCode);
+                if (error.Length > 0)
+                {
+                    ObserveAotDiagnostic(error);
+                    diagnostics.Add(error);
+                    logger.LogDebug("dotnet publish {ProjectPath} (stderr): {Error}", projectMetadata.ProjectPath, error);
+                }
+            })
+            .ExecuteAsync(cancellationToken).ConfigureAwait(false);
+
+        if (exitCode != 0)
+        {
+            var message =
+                $"Failed to build container image for resource '{resource.Name}' from project '{projectMetadata.ProjectPath}' with exit code {exitCode}.";
+            var guidance = GetFileAppAotGuidance(
+                projectMetadata,
+                options,
+                crossOsAotDiagnosticSeen);
+            if (guidance is not null)
+            {
+                message = $"{message}{Environment.NewLine}{guidance}";
             }
+
+            throw new ProcessFailedException(
+                message,
+                exitCode,
+                diagnostics.ToArray(),
+                diagnostics.TotalLineCount);
         }
+
+        logger.LogDebug(
+            ".NET CLI completed with exit code: {ExitCode}",
+            exitCode);
     }
 
     private static string? GetFileAppAotGuidance(
@@ -816,7 +815,7 @@ internal sealed class ResourceContainerImageManager(
     {
         try
         {
-            var outputLines = new List<string>();
+            string? workingDirectory = null;
             var command = projectMetadata.IsFileBasedApp ? "build" : "msbuild";
             var arguments = new List<string>
                 {
@@ -832,51 +831,54 @@ internal sealed class ResourceContainerImageManager(
                 arguments.Add(buildContext.ResponseFile.Argument);
             }
 
-            var spec = new ProcessSpec("dotnet")
+            var processCommand = new ProcessCommand("dotnet")
             {
-                ArgumentList = arguments,
+                Arguments = arguments,
                 WorkingDirectory = buildContext.WorkingDirectory,
-                EnvironmentVariables = new Dictionary<string, string>(buildContext.Environment, buildContext.Environment.Comparer),
-                OnOutputData = output =>
-                {
-                    if (!string.IsNullOrWhiteSpace(output))
-                    {
-                        outputLines.Add(output.Trim());
-                    }
-                },
-                OnErrorData = error => logger.LogDebug("dotnet {Command} (stderr): {Error}", command, error),
-                ThrowOnNonZeroReturnCode = false
+                EnvironmentVariables = new Dictionary<string, string>(buildContext.Environment, buildContext.Environment.Comparer)
             };
 
             logger.LogDebug(
                 "Getting ContainerWorkingDirectory for .NET program {ProjectPath}",
                 projectMetadata.ProjectPath);
-            var (pendingResult, processDisposable) = processRunner.Run(spec);
+            var exitCode = await processRunner.CreateExecution(processCommand)
+                .DecodeChars(Encoding.UTF8)
+                .FrameLines()
+                .OnStandardOutput(output =>
+                {
+                    if (!string.IsNullOrWhiteSpace(output))
+                    {
+                        workingDirectory = output.Trim();
+                    }
+                })
+                .OnStandardError(error =>
+                {
+                    if (error.Length > 0)
+                    {
+                        logger.LogDebug("dotnet {Command} (stderr): {Error}", command, error);
+                    }
+                })
+                .ExecuteAsync(cancellationToken).ConfigureAwait(false);
 
-            await using (processDisposable)
+            if (exitCode != 0)
             {
-                var result = await pendingResult.WaitAsync(cancellationToken).ConfigureAwait(false);
-                if (result.ExitCode != 0)
-                {
-                    logger.LogDebug(
-                        "Failed to get ContainerWorkingDirectory for .NET program {ProjectPath}. Exit code: {ExitCode}. Using default /app",
-                        projectMetadata.ProjectPath,
-                        result.ExitCode);
-                    return "/app";
-                }
-
-                var workingDirectory = outputLines.LastOrDefault();
-                if (string.IsNullOrWhiteSpace(workingDirectory))
-                {
-                    logger.LogDebug(
-                        "dotnet {Command} returned an empty ContainerWorkingDirectory for .NET program {ProjectPath}. Using default /app",
-                        command,
-                        projectMetadata.ProjectPath);
-                    return "/app";
-                }
-
-                return workingDirectory;
+                logger.LogDebug(
+                    "Failed to get ContainerWorkingDirectory for .NET program {ProjectPath}. Exit code: {ExitCode}. Using default /app",
+                    projectMetadata.ProjectPath,
+                    exitCode);
+                return "/app";
             }
+
+            if (string.IsNullOrWhiteSpace(workingDirectory))
+            {
+                logger.LogDebug(
+                    "dotnet {Command} returned an empty ContainerWorkingDirectory for .NET program {ProjectPath}. Using default /app",
+                    command,
+                    projectMetadata.ProjectPath);
+                return "/app";
+            }
+
+            return workingDirectory;
         }
         catch (OperationCanceledException)
         {

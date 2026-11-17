@@ -937,8 +937,8 @@ public class ProjectResourceTests(ITestOutputHelper outputHelper)
         builder.Services.AddSingleton<IContainerRuntime, FakeContainerRuntime>();
         builder.Services.AddSingleton<IContainerRuntimeResolver>(sp => (IContainerRuntimeResolver)sp.GetRequiredService<IContainerRuntime>());
         var processRunner = new TestProcessRunner();
-        processRunner.EnqueueResult();
-        processRunner.EnqueueResult(output: ["/app"]);
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Exited(0)]));
+        processRunner.Enqueue(new FakeEventStream<byte>([Emit<byte>.Stdout("/app"u8), Emit<byte>.StdoutCompleted(), Emit<byte>.Exited(0)]));
         builder.Services.AddSingleton<IProcessRunner>(processRunner);
 
         // Create a test container resource that implements IResourceWithContainerFiles
@@ -970,11 +970,11 @@ public class ProjectResourceTests(ITestOutputHelper outputHelper)
         await app.WaitForShutdownAsync();
 
         Assert.Collection(
-            processRunner.ProcessSpecs,
-            publish => Assert.Equal("publish", publish.ArgumentList![0]),
+            processRunner.Commands,
+            publish => Assert.Equal("publish", publish.Arguments[0]),
             workingDirectory => Assert.Contains(
                 "-getProperty:ContainerWorkingDirectory",
-                workingDirectory.ArgumentList!));
+                workingDirectory.Arguments));
 
         Assert.True(fakeContainerRuntime.WasTagImageCalled);
         var tagCall = Assert.Single(fakeContainerRuntime.TagImageCalls);

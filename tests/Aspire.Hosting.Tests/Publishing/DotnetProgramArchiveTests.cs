@@ -6,9 +6,10 @@
 #pragma warning disable ASPIREPROJECTS001
 
 using System.Collections.Concurrent;
-using Aspire.Hosting.Dcp.Process;
+using System.Runtime.CompilerServices;
 using Aspire.Hosting.Pipelines;
 using Aspire.Hosting.Publishing;
+using Aspire.Hosting.Testing;
 using Aspire.Hosting.Tests.Utils;
 using Aspire.Hosting.Utils;
 using Microsoft.AspNetCore.InternalTesting;
@@ -47,7 +48,7 @@ public class DotnetProgramArchiveTests(ITestOutputHelper output)
         Assert.Equal([ImageReference], TestContainerImageArchive.ReadDockerImageReferences(archivePath));
         Assert.Equal("sdk+assets", TestContainerImageArchive.ReadLayerContents(archivePath));
         Assert.Empty(runtime.TagImageCalls);
-        var sdkReference = GetSdkImageReference(runner.ProcessSpecs[0]);
+        var sdkReference = GetSdkImageReference(runner.Commands[0]);
         var layeredBuild = Assert.Single(runtime.BuildImageCalls);
         var layeredOptions = layeredBuild.options!;
         Assert.False(File.Exists(layeredBuild.dockerfilePath));
@@ -112,7 +113,7 @@ public class DotnetProgramArchiveTests(ITestOutputHelper output)
         Assert.Equal("second-sdk+assets", TestContainerImageArchive.ReadLayerContents(secondArchive));
         Assert.Equal([ImageReference], TestContainerImageArchive.ReadDockerImageReferences(firstArchive));
         Assert.Equal([ImageReference], TestContainerImageArchive.ReadDockerImageReferences(secondArchive));
-        Assert.NotEqual(GetSdkImageReference(firstRunner.ProcessSpecs[0]), GetSdkImageReference(secondRunner.ProcessSpecs[0]));
+        Assert.NotEqual(GetSdkImageReference(firstRunner.Commands[0]), GetSdkImageReference(secondRunner.Commands[0]));
         Assert.Equal(4, runtime.RemoveImageCalls.Count);
         Assert.Equal(4, runtime.RemoveImageCalls.Distinct(StringComparer.Ordinal).Count());
     }
@@ -124,11 +125,14 @@ public class DotnetProgramArchiveTests(ITestOutputHelper output)
         using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
         var images = CreateExistingImages();
         var existingImages = images.ToArray();
-        var runner = new TestProcessRunner
-        {
-            RunCallback = spec => images[GetSdkImageReference(spec)] = "partial-sdk"
-        };
-        runner.EnqueueResult(exitCode: 42, error: ["publish failed after writing the image"]);
+        var runner = new TestProcessRunner();
+        var publish = new FakeEventStream<byte>(
+        [
+            Emit<byte>.Stderr("publish failed after writing the image"u8),
+            Emit<byte>.StderrCompleted(),
+            Emit<byte>.Exited(42)
+        ]);
+        runner.Enqueue(PublishPartialImageAsync());
         var runtime = CreateRuntime(images);
         builder.Services.AddSingleton<IProcessRunner>(runner);
         builder.Services.AddFakeContainerRuntime(runtime);
@@ -140,8 +144,106 @@ public class DotnetProgramArchiveTests(ITestOutputHelper output)
 
         Assert.Equal(42, exception.ExitCode);
         AssertImagesUnchanged(existingImages, images);
-        Assert.Equal(GetSdkImageReference(Assert.Single(runner.ProcessSpecs)), Assert.Single(runtime.RemoveImageCalls));
+        Assert.Equal(GetSdkImageReference(Assert.Single(runner.Commands)), Assert.Single(runtime.RemoveImageCalls));
         Assert.Empty(runtime.BuildImageCalls);
+        Assert.Equal(1, publish.DisposeCount);
+
+        async IAsyncEnumerable<ProcessEvent<ReadOnlyMemory<byte>>> PublishPartialImageAsync(
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            images[GetSdkImageReference(Assert.Single(runner.Commands))] = "partial-sdk";
+            await foreach (var item in publish.WithCancellation(cancellationToken))
+            {
+                yield return item;
+            }
+        }
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(42)]
+    public async Task SdkPublishWaitsForTerminalCleanupBeforeLayeringOrRemovingOwnedImage(int exitCode)
+    {
+        using var workspace = TemporaryWorkspace.Create(output);
+        using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
+        var images = CreateExistingImages();
+        var existingImages = images.ToArray();
+        var runner = new TestProcessRunner();
+        var cleanupStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cleanupRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var publish = new FakeEventStream<byte>([Emit<byte>.Exited(exitCode)]);
+        runner.Enqueue(PublishImageAsync());
+        if (exitCode == 0)
+        {
+            runner.Enqueue(new FakeEventStream<byte>(
+            [
+                Emit<byte>.Stdout("/app"u8),
+                Emit<byte>.StdoutCompleted(),
+                Emit<byte>.Exited(0)
+            ]));
+        }
+        var runtime = CreateRuntime(images);
+        builder.Services.AddSingleton<IProcessRunner>(runner);
+        builder.Services.AddFakeContainerRuntime(runtime);
+        var archivePath = Path.Combine(workspace.WorkspaceRoot.FullName, "program.tar");
+        var resource = AddArchiveResource(builder, workspace.WorkspaceRoot.FullName, archivePath);
+        using var app = builder.Build();
+
+        var build = BuildAsync(app, resource.Resource, false, TestContext.Current.CancellationToken);
+        try
+        {
+            await cleanupStarted.Task.DefaultTimeout();
+            Assert.Equal(1, publish.DisposeCount);
+            Assert.False(build.IsCompleted);
+            Assert.Equal("sdk", images[GetSdkImageReference(Assert.Single(runner.Commands))]);
+            Assert.Empty(runtime.BuildImageCalls);
+            Assert.Empty(runtime.RemoveImageCalls);
+
+            cleanupRelease.TrySetResult();
+            if (exitCode == 0)
+            {
+                await build.DefaultTimeout();
+                Assert.Equal("sdk+assets", TestContainerImageArchive.ReadLayerContents(archivePath));
+                Assert.Equal([ImageReference], TestContainerImageArchive.ReadDockerImageReferences(archivePath));
+                Assert.Single(runtime.BuildImageCalls);
+                Assert.Equal(2, runtime.RemoveImageCalls.Count);
+            }
+            else
+            {
+                var failure = await Assert.ThrowsAsync<ProcessFailedException>(() => build).DefaultTimeout();
+                Assert.Equal(exitCode, failure.ExitCode);
+
+                Assert.Empty(runtime.BuildImageCalls);
+                Assert.Equal(GetSdkImageReference(Assert.Single(runner.Commands)), Assert.Single(runtime.RemoveImageCalls));
+                Assert.False(File.Exists(archivePath));
+            }
+
+            AssertImagesUnchanged(existingImages, images);
+        }
+        finally
+        {
+            cleanupRelease.TrySetResult();
+        }
+
+        async IAsyncEnumerable<ProcessEvent<ReadOnlyMemory<byte>>> PublishImageAsync(
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            images[GetSdkImageReference(Assert.Single(runner.Commands))] = "sdk";
+            try
+            {
+                await foreach (var item in publish.WithCancellation(cancellationToken))
+                {
+                    yield return item;
+                }
+            }
+            finally
+            {
+                // Hold this fixture's process cleanup so no query, layering, or image removal
+                // can proceed merely because an exit event was observed.
+                cleanupStarted.TrySetResult();
+                await cleanupRelease.Task;
+            }
+        }
     }
 
     [Fact]
@@ -152,22 +254,16 @@ public class DotnetProgramArchiveTests(ITestOutputHelper output)
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         var images = CreateExistingImages();
         var existingImages = images.ToArray();
-        var runner = new TestProcessRunner
-        {
-            RunCallback = spec =>
-            {
-                if (spec.ArgumentList![0] == "publish")
-                {
-                    images[GetSdkImageReference(spec)] = "sdk";
-                }
-                else
-                {
-                    cancellation.Cancel();
-                }
-            }
-        };
-        runner.EnqueueResult();
-        runner.EnqueuePending(new TaskCompletionSource<ProcessResult>(TaskCreationOptions.RunContinuationsAsynchronously).Task);
+        var runner = CreateProcessRunner(images, "sdk", enqueueWorkingDirectory: false);
+        var queryStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var queryRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var queryCleanup = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var query = new FakeEventStream<byte>(
+        [
+            Emit<byte>.Stdout("querying\n"u8),
+            Emit<byte>.Wait(queryRelease.Task)
+        ], cleanup: queryCleanup.Task);
+        runner.Enqueue(query.OnStandardOutput(_ => queryStarted.TrySetResult()));
         var runtime = CreateRuntime(images);
         var removeImage = runtime.RemoveImageAsyncCallback!;
         runtime.RemoveImageAsyncCallback = (image, cleanupToken) =>
@@ -181,11 +277,33 @@ public class DotnetProgramArchiveTests(ITestOutputHelper output)
         var resource = AddArchiveResource(builder, workspace.WorkspaceRoot.FullName, Path.Combine(workspace.WorkspaceRoot.FullName, "program.tar"));
         using var app = builder.Build();
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => BuildAsync(app, resource.Resource, false, cancellation.Token)).DefaultTimeout();
+        var build = BuildAsync(app, resource.Resource, false, cancellation.Token);
+        try
+        {
+            await queryStarted.Task.DefaultTimeout();
+            Assert.False(cancellation.IsCancellationRequested);
+            Assert.False(build.IsCompleted);
+            Assert.Equal("sdk", images[GetSdkImageReference(runner.Commands[0])]);
+
+            await cancellation.CancelAsync();
+
+            Assert.True(cancellation.IsCancellationRequested);
+            Assert.False(build.IsCompleted);
+            Assert.Empty(runtime.RemoveImageCalls);
+            queryCleanup.TrySetResult();
+            var exception = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => build).DefaultTimeout();
+            Assert.Equal(cancellation.Token, exception.CancellationToken);
+            Assert.False(queryRelease.Task.IsCompleted);
+            Assert.Equal(1, query.DisposeCount);
+        }
+        finally
+        {
+            queryRelease.TrySetResult();
+            queryCleanup.TrySetResult();
+        }
 
         AssertImagesUnchanged(existingImages, images);
-        Assert.Equal(GetSdkImageReference(runner.ProcessSpecs[0]), Assert.Single(runtime.RemoveImageCalls));
+        Assert.Equal(GetSdkImageReference(runner.Commands[0]), Assert.Single(runtime.RemoveImageCalls));
         Assert.Empty(runtime.BuildImageCalls);
     }
 
@@ -403,29 +521,47 @@ public class DotnetProgramArchiveTests(ITestOutputHelper output)
     };
 
     private static TestProcessRunner CreateProcessRunner(ConcurrentDictionary<string, string> images, string contents)
+        => CreateProcessRunner(images, contents, enqueueWorkingDirectory: true);
+
+    private static TestProcessRunner CreateProcessRunner(
+        ConcurrentDictionary<string, string> images, string contents, bool enqueueWorkingDirectory)
     {
-        var runner = new TestProcessRunner
+        var runner = new TestProcessRunner();
+        runner.Enqueue(PublishImageAsync());
+        if (enqueueWorkingDirectory)
         {
-            RunCallback = spec =>
-            {
-                if (spec.ArgumentList![0] == "publish")
-                {
-                    images[GetSdkImageReference(spec)] = contents;
-                }
-            }
-        };
-        runner.EnqueueResult();
-        runner.EnqueueResult(output: ["/app"]);
+            runner.Enqueue(new FakeEventStream<byte>(
+            [
+                Emit<byte>.Stdout("/app"u8),
+                Emit<byte>.StdoutCompleted(),
+                Emit<byte>.Exited(0)
+            ]));
+        }
 
         return runner;
+
+        async IAsyncEnumerable<ProcessEvent<ReadOnlyMemory<byte>>> PublishImageAsync(
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            // The runner records the command on first consumption, before entering this iterator.
+            // Use its private image reference so layering and cleanup depend on the image actually created here.
+            var command = Assert.Single(runner.Commands);
+            Assert.Equal("publish", command.Arguments[0]);
+            images[GetSdkImageReference(command)] = contents;
+            var publish = new FakeEventStream<byte>([Emit<byte>.Exited(0)]);
+            await foreach (var item in publish.WithCancellation(cancellationToken))
+            {
+                yield return item;
+            }
+        }
     }
 
-    private static string GetSdkImageReference(ProcessSpec spec)
+    private static string GetSdkImageReference(ProcessCommand command)
     {
         // SDK invocations carry separate properties, for example:
         // --property:ContainerRepository=registry.example.com:5000/team/program --property:ContainerImageTag=release
-        var repository = Assert.Single(spec.ArgumentList!, static argument => argument.StartsWith("--property:ContainerRepository=", StringComparison.Ordinal));
-        var tag = Assert.Single(spec.ArgumentList!, static argument => argument.StartsWith("--property:ContainerImageTag=", StringComparison.Ordinal));
+        var repository = Assert.Single(command.Arguments, static argument => argument.StartsWith("--property:ContainerRepository=", StringComparison.Ordinal));
+        var tag = Assert.Single(command.Arguments, static argument => argument.StartsWith("--property:ContainerImageTag=", StringComparison.Ordinal));
 
         return $"{repository["--property:ContainerRepository=".Length..]}:{tag["--property:ContainerImageTag=".Length..]}";
     }
