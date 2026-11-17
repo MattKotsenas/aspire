@@ -5,7 +5,6 @@ using System.ComponentModel;
 using System.Text;
 using System.Text.Json;
 using Aspire.Hosting.ApplicationModel;
-using Aspire.Hosting.Dcp.Process;
 using Aspire.Hosting.Utils;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -122,25 +121,20 @@ internal static class GoRunDebugging
         var runner = context.ExecutionContext.Services.GetRequiredService<IProcessRunner>();
         try
         {
-            var (resultTask, process) = runner.Run(new ProcessSpec(resource.Command)
+            var exitCode = await runner.CreateExecution(new ProcessCommand(resource.Command)
             {
-                ArgumentList = ["env", "-json", "GOFLAGS"],
+                Arguments = ["env", "-json", "GOFLAGS"],
                 WorkingDirectory = resource.WorkingDirectory,
                 EnvironmentVariables = environment,
-                ResolveExecutablePath = true,
-                // Disposal awaits the process result after termination. Handle exit codes here
-                // so a terminated probe cannot replace caller cancellation with an exit exception.
-                ThrowOnNonZeroReturnCode = false,
-                OnOutputData = line => output.AppendLine(line)
-            });
+                ResolveExecutablePath = true
+            })
+                .DecodeChars(Encoding.UTF8)
+                .AppendStandardOutput(output)
+                .ExecuteAsync(context.CancellationToken).ConfigureAwait(false);
 
-            await using (process)
+            if (exitCode != 0)
             {
-                var result = await resultTask.WaitAsync(context.CancellationToken).ConfigureAwait(false);
-                if (result.ExitCode != 0)
-                {
-                    throw new InvalidOperationException($"The Go settings probe exited with code {result.ExitCode}.");
-                }
+                throw new InvalidOperationException($"The Go settings probe exited with code {exitCode}.");
             }
 
             using var document = JsonDocument.Parse(output.ToString());

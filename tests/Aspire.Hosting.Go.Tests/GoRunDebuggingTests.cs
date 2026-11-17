@@ -8,6 +8,7 @@ using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Backchannel;
 using Aspire.Hosting.Dcp.Process;
 using Aspire.Hosting.Diagnostics;
+using Aspire.Hosting.Testing;
 using Aspire.Hosting.Tests.Utils;
 using Aspire.Hosting.Utils;
 using Aspire.TestUtilities;
@@ -27,16 +28,34 @@ public class GoRunDebuggingTests(ITestOutputHelper outputHelper)
     {
         using var builder = TestDistributedApplicationBuilder.Create();
         var runner = new TestProcessRunner();
-        runner.EnqueueResult(output: [JsonSerializer.Serialize(new { GOFLAGS = "" })]);
+        var script = new FakeEventStream<byte>(
+        [
+            Emit<byte>.Started(1),
+            Emit<byte>.Stdout("""{"GOFLAGS":""}"""u8),
+            Emit<byte>.StdoutCompleted(),
+            Emit<byte>.StderrCompleted(),
+            Emit<byte>.Exited(0)
+        ]);
+        runner.Enqueue(script);
         builder.Services.AddSingleton<IProcessRunner>(runner);
         var go = builder.AddGoApp("api", builder.AppHostDirectory);
         var unrelated = builder.AddParameter("unrelated", () => throw new InvalidOperationException("Unrelated value was resolved."));
+        var goEnvironment = builder.AddParameter("go-environment", () => "selected.env");
 
         await using var app = builder.Build();
         var context = new EnvironmentCallbackContext(builder.ExecutionContext, go.Resource);
         context.EnvironmentVariables["UNRELATED"] = unrelated.Resource;
+        context.EnvironmentVariables["GOENV"] = goEnvironment.Resource;
+        context.EnvironmentVariables["GOTOOLCHAIN"] = "auto";
 
         await GoRunDebugging.ConfigureEnvironmentAsync(context);
+
+        Assert.Equal("\"-ldflags=-s=false -w=false\" ", context.EnvironmentVariables["GOFLAGS"]);
+        var probeEnvironment = Assert.Single(runner.Commands).EnvironmentVariables;
+        Assert.Equal(["GOENV", "GOTOOLCHAIN"], probeEnvironment.Keys);
+        Assert.Equal("selected.env", probeEnvironment["GOENV"]);
+        Assert.Equal("local", probeEnvironment["GOTOOLCHAIN"]);
+        Assert.Equal(1, script.DisposeCount);
     }
 
     [Theory]
@@ -45,13 +64,24 @@ public class GoRunDebuggingTests(ITestOutputHelper outputHelper)
     [InlineData(null, true)]
     public async Task GoFlagsProbeUsesConfiguredCommandAndPreservesItsFlags(string? resourceFlags, bool mixedQuotes)
     {
-        var flags = mixedQuotes ? "-tags=wrapper -ldflags=-X=main.version=a'\"b" : "-tags=wrapper -ldflags=-X=main.version=wrapper";
+        var flags = mixedQuotes ? "-tags=wrapper -ldflags=-X=main.version=a'\"b" : "-tags=wrapper -ldflags=-X=main.version=café";
         var expectedFlags = mixedQuotes ? flags :
-            "\"-ldflags=-s=false -w=false\" -tags=wrapper -ldflags=-X=main.version=wrapper \"-ldflags=-s=false -w=false -X=main.version=wrapper\"";
+            "\"-ldflags=-s=false -w=false\" -tags=wrapper -ldflags=-X=main.version=café \"-ldflags=-s=false -w=false -X=main.version=café\"";
+        // Keep literal UTF-8 in the ordinary go env fixture to exercise the probe's selected encoding.
+        var probeOutput = mixedQuotes ? JsonSerializer.Serialize(new { GOFLAGS = flags }) : $$"""{"GOFLAGS":"{{flags}}"}""";
         using var builder = TestDistributedApplicationBuilder.Create();
         var command = Path.Combine(builder.AppHostDirectory, "custom go");
         var runner = new TestProcessRunner();
-        runner.EnqueueResult(output: [JsonSerializer.Serialize(new { GOFLAGS = flags })]);
+        runner.Enqueue(new FakeEventStream<byte>(
+        [
+            Emit<byte>.Started(1),
+            Emit<byte>.Stderr("wrapper diagnostic: reading Go settings\n"u8),
+            Emit<byte>.Stdout(Encoding.UTF8.GetBytes(probeOutput)),
+            Emit<byte>.Stderr("""{"GOFLAGS":"-ldflags=-s"}"""u8),
+            Emit<byte>.StdoutCompleted(),
+            Emit<byte>.StderrCompleted(),
+            Emit<byte>.Exited(0)
+        ]));
         builder.Services.AddSingleton<IProcessRunner>(runner);
         var go = builder.AddGoApp("api", builder.AppHostDirectory)
             .WithCommand(command);
@@ -62,9 +92,18 @@ public class GoRunDebuggingTests(ITestOutputHelper outputHelper)
 
         var environment = await GetEnvironmentAsync(builder, go.Resource);
 
-        var probe = Assert.Single(runner.ProcessSpecs);
+        var probe = Assert.Single(runner.Commands);
         Assert.Equal(command, probe.ExecutablePath);
-        Assert.Equal(["env", "-json", "GOFLAGS"], probe.ArgumentList);
+        Assert.Equal(["env", "-json", "GOFLAGS"], probe.Arguments);
+        Assert.Equal(go.Resource.WorkingDirectory, probe.WorkingDirectory);
+        Assert.True(probe.ResolveExecutablePath);
+        Assert.True(probe.InheritEnvironmentVariables);
+        Assert.Equal("local", probe.EnvironmentVariables["GOTOOLCHAIN"]);
+        Assert.Equal(resourceFlags is not null, probe.EnvironmentVariables.TryGetValue("GOFLAGS", out var probedFlags));
+        Assert.Equal(resourceFlags, probedFlags);
+        var probeEnvironment = Assert.IsType<Dictionary<string, string>>(probe.EnvironmentVariables);
+        Assert.Same(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal, probeEnvironment.Comparer);
+        Assert.Empty(runner.ProcessSpecs);
         Assert.Equal(expectedFlags, environment["GOFLAGS"]);
     }
 
@@ -89,14 +128,18 @@ public class GoRunDebuggingTests(ITestOutputHelper outputHelper)
             var runner = new TestProcessRunner();
             var started = bool.Parse(processStartedValue);
             var startFailure = new Win32Exception(2, "The configured Go command could not be started.");
-            if (started)
-            {
-                runner.EnqueueResult(exitCode: 1, output: ["""{"GOFLAGS":"-ldflags=-s"}"""]);
-            }
-            else
-            {
-                runner.EnqueueException(startFailure);
-            }
+            var script = new FakeEventStream<byte>(started ?
+            [
+                Emit<byte>.Started(1),
+                Emit<byte>.Stdout("""{"GOFLAGS":"-ldflags=-s"}"""u8),
+                Emit<byte>.StdoutCompleted(),
+                Emit<byte>.StderrCompleted(),
+                Emit<byte>.Exited(1)
+            ] :
+            [
+                Emit<byte>.Fail(startFailure)
+            ]);
+            runner.Enqueue(script);
 
             builder.Services.AddSingleton<IProcessRunner>(runner);
             var sink = new TestSink(writeEnabled: context => context.LogLevel is LogLevel.Warning or LogLevel.Debug);
@@ -128,13 +171,13 @@ public class GoRunDebuggingTests(ITestOutputHelper outputHelper)
             if (started)
             {
                 Assert.IsType<InvalidOperationException>(diagnostic.Exception);
-                Assert.Equal(1, Assert.Single(runner.Disposables).DisposeCallCount);
             }
             else
             {
                 Assert.Same(startFailure, diagnostic.Exception);
             }
 
+            Assert.Equal(1, script.DisposeCount);
             Assert.Contains("GOFLAGS", diagnostic.Message, StringComparison.Ordinal);
         }, processStarted.ToString(), hasAmbientFlags.ToString(), emptyResourceFlags.ToString(), options).Dispose();
     }
@@ -153,14 +196,22 @@ public class GoRunDebuggingTests(ITestOutputHelper outputHelper)
         {
             using var builder = TestDistributedApplicationBuilder.Create();
             var runner = new TestProcessRunner();
-            runner.EnqueueResult(output: [probeOutput]);
+            var script = new FakeEventStream<byte>(
+            [
+                Emit<byte>.Started(1),
+                Emit<byte>.Stdout(Encoding.UTF8.GetBytes(probeOutput)),
+                Emit<byte>.StdoutCompleted(),
+                Emit<byte>.StderrCompleted(),
+                Emit<byte>.Exited(0)
+            ]);
+            runner.Enqueue(script);
             builder.Services.AddSingleton<IProcessRunner>(runner);
             var go = builder.AddGoApp("api", builder.AppHostDirectory);
 
             var environment = await GetEnvironmentAsync(builder, go.Resource);
 
             Assert.Equal("\"-ldflags=-s=false -w=false\"", environment["GOFLAGS"].Trim());
-            Assert.Equal(1, Assert.Single(runner.Disposables).DisposeCallCount);
+            Assert.Equal(1, script.DisposeCount);
         }, output, options).Dispose();
     }
 
@@ -171,31 +222,23 @@ public class GoRunDebuggingTests(ITestOutputHelper outputHelper)
     {
         using var builder = TestDistributedApplicationBuilder.Create();
         using var cancellation = new CancellationTokenSource();
-        var result = new TaskCompletionSource<ProcessResult>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var runner = new TestProcessRunner();
-        runner.EnqueuePending(result.Task);
-        runner.RunCallback = spec =>
+        var producerCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        List<StreamStep<byte>> steps =
+        [
+            Emit<byte>.Started(1),
+            Emit<byte>.Stdout("""{"GOFLAGS":"-tags=probe"}"""u8)
+        ];
+        if (processExitsNonzero)
         {
-            if (processExitsNonzero)
-            {
-                // ProcessUtil disposal terminates the child and awaits its lifetime result.
-                Assert.Single(runner.Disposables).OnDisposeAsync = async () =>
-                {
-                    if (spec.ThrowOnNonZeroReturnCode)
-                    {
-                        result.SetException(new InvalidOperationException("The terminated probe exited nonzero."));
-                    }
-                    else
-                    {
-                        result.SetResult(new ProcessResult(1));
-                    }
-
-                    await result.Task;
-                };
-            }
-
-            cancellation.Cancel();
-        };
+            // A nonzero observation must not apply fallback while producer EOF is still pending.
+            steps.Add(Emit<byte>.Exited(1));
+        }
+        steps.Add(Emit<byte>.Wait(producerCompletion.Task));
+        steps.Add(Emit<byte>.StdoutCompleted());
+        steps.Add(Emit<byte>.StderrCompleted());
+        var script = new FakeEventStream<byte>(steps);
+        var runner = new TestProcessRunner();
+        runner.Enqueue(script);
         builder.Services.AddSingleton<IProcessRunner>(runner);
         var go = builder.AddGoApp("api", builder.AppHostDirectory);
         var sink = new TestSink();
@@ -206,13 +249,163 @@ public class GoRunDebuggingTests(ITestOutputHelper outputHelper)
             Logger = new TestLogger(nameof(GoRunDebuggingTests), sink, enabled: true)
         };
 
-        var exception = await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => GoRunDebugging.ConfigureEnvironmentAsync(context));
+        var pending = GoRunDebugging.ConfigureEnvironmentAsync(context);
+        Assert.False(pending.IsCompleted);
+        Assert.Equal(processExitsNonzero ? 4 : 3, script.MoveNextCount);
+        Assert.Equal(0, script.DisposeCount);
+        Assert.Empty(context.EnvironmentVariables);
+        Assert.Empty(sink.Writes);
+        cancellation.Cancel();
+        var exception = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
+
+        Assert.Equal(cancellation.Token, exception.CancellationToken);
+        Assert.False(producerCompletion.Task.IsCompleted);
+        Assert.Empty(context.EnvironmentVariables);
+        Assert.Empty(sink.Writes);
+        Assert.Equal(1, script.DisposeCount);
+    }
+
+    [Theory]
+    [InlineData(null, false)]
+    [InlineData(1, true)]
+    public async Task GoFlagsProbeParsesOnlyAfterKnownZeroExit(int? exitCode, bool invalidOutput)
+    {
+        using var builder = TestDistributedApplicationBuilder.Create();
+        List<StreamStep<byte>> steps =
+        [
+            Emit<byte>.Started(1),
+            Emit<byte>.Stdout(invalidOutput ? "invalid-json"u8 : """{"GOFLAGS":"-tags=probe"}"""u8),
+            Emit<byte>.StdoutCompleted(),
+            Emit<byte>.StderrCompleted()
+        ];
+        if (exitCode is { } knownExitCode)
+        {
+            steps.Add(Emit<byte>.Exited(knownExitCode));
+        }
+        var script = new FakeEventStream<byte>(steps);
+        var runner = new TestProcessRunner();
+        runner.Enqueue(script);
+        builder.Services.AddSingleton<IProcessRunner>(runner);
+        var go = builder.AddGoApp("api", builder.AppHostDirectory);
+        var sink = new TestSink();
+        await using var app = builder.Build();
+        var context = new EnvironmentCallbackContext(builder.ExecutionContext, go.Resource)
+        {
+            Logger = new TestLogger(nameof(GoRunDebuggingTests), sink, enabled: true)
+        };
+        context.EnvironmentVariables["GOFLAGS"] = "";
+
+        await GoRunDebugging.ConfigureEnvironmentAsync(context);
+
+        var flags = Assert.IsType<string>(context.EnvironmentVariables["GOFLAGS"]);
+        Assert.Equal("\"-ldflags=-s=false -w=false\"", flags.Trim());
+        var diagnostic = Assert.Single(sink.Writes);
+        Assert.Equal(LogLevel.Warning, diagnostic.LogLevel);
+        Assert.IsType<InvalidOperationException>(diagnostic.Exception);
+        Assert.Equal(1, script.DisposeCount);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task GoFlagsProbeWaitsForDisposalBeforeParsingOrFallback(bool failCleanup)
+    {
+        using var builder = TestDistributedApplicationBuilder.Create();
+        var cleanup = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cleanupFailure = new IOException("Go settings probe cleanup failed.");
+        var script = new FakeEventStream<byte>(
+        [
+            Emit<byte>.Started(1),
+            Emit<byte>.Stdout("""{"GOFLAGS":"-tags=probe"}"""u8),
+            Emit<byte>.StdoutCompleted(),
+            Emit<byte>.StderrCompleted(),
+            Emit<byte>.Exited(0)
+        ], cleanupFailure: failCleanup ? cleanupFailure : null, cleanup: cleanup.Task);
+        var runner = new TestProcessRunner();
+        runner.Enqueue(script);
+        builder.Services.AddSingleton<IProcessRunner>(runner);
+        var go = builder.AddGoApp("api", builder.AppHostDirectory);
+        var sink = new TestSink();
+        await using var app = builder.Build();
+        var context = new EnvironmentCallbackContext(builder.ExecutionContext, go.Resource)
+        {
+            Logger = new TestLogger(nameof(GoRunDebuggingTests), sink, enabled: true)
+        };
+        context.EnvironmentVariables["GOFLAGS"] = "";
+
+        var pending = GoRunDebugging.ConfigureEnvironmentAsync(context);
+        try
+        {
+            Assert.Equal(1, script.DisposeCount);
+            Assert.False(pending.IsCompleted);
+            Assert.Equal("", context.EnvironmentVariables["GOFLAGS"]);
+            Assert.Empty(sink.Writes);
+        }
+        finally
+        {
+            cleanup.SetResult();
+        }
+        await pending.WaitAsync(TestContext.Current.CancellationToken);
+
+        var flags = Assert.IsType<string>(context.EnvironmentVariables["GOFLAGS"]);
+        if (failCleanup)
+        {
+            Assert.Equal("\"-ldflags=-s=false -w=false\"", flags.Trim());
+            var diagnostic = Assert.Single(sink.Writes);
+            Assert.Same(cleanupFailure, diagnostic.Exception);
+        }
+        else
+        {
+            Assert.Equal("\"-ldflags=-s=false -w=false\" -tags=probe", flags);
+            Assert.Empty(sink.Writes);
+        }
+        Assert.Equal(1, script.DisposeCount);
+    }
+
+    [Fact]
+    public async Task GoFlagsProbeDoesNotFallbackForCleanupFailureAfterCancellation()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create();
+        using var cancellation = new CancellationTokenSource();
+        var cleanup = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var script = new FakeEventStream<byte>(
+        [
+            Emit<byte>.Started(1),
+            Emit<byte>.Stdout("""{"GOFLAGS":"-tags=probe"}"""u8),
+            Emit<byte>.StdoutCompleted(),
+            Emit<byte>.StderrCompleted(),
+            Emit<byte>.Exited(0)
+        ], cleanupFailure: new IOException("Go settings probe cleanup failed."), cleanup: cleanup.Task);
+        var runner = new TestProcessRunner();
+        runner.Enqueue(script);
+        builder.Services.AddSingleton<IProcessRunner>(runner);
+        var go = builder.AddGoApp("api", builder.AppHostDirectory);
+        var sink = new TestSink();
+        await using var app = builder.Build();
+        var context = new EnvironmentCallbackContext(builder.ExecutionContext, go.Resource, cancellationToken: cancellation.Token)
+        {
+            Logger = new TestLogger(nameof(GoRunDebuggingTests), sink, enabled: true)
+        };
+
+        var pending = GoRunDebugging.ConfigureEnvironmentAsync(context);
+        try
+        {
+            Assert.Equal(1, script.DisposeCount);
+            Assert.False(pending.IsCompleted);
+            Assert.Empty(context.EnvironmentVariables);
+            Assert.Empty(sink.Writes);
+            cancellation.Cancel();
+        }
+        finally
+        {
+            cleanup.SetResult();
+        }
+        var exception = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
 
         Assert.Equal(cancellation.Token, exception.CancellationToken);
         Assert.Empty(context.EnvironmentVariables);
         Assert.Empty(sink.Writes);
-        Assert.Equal(1, Assert.Single(runner.Disposables).DisposeCallCount);
+        Assert.Equal(1, script.DisposeCount);
     }
 
     [Theory]
@@ -296,6 +489,7 @@ public class GoRunDebuggingTests(ITestOutputHelper outputHelper)
 
         Assert.False(environment.ContainsKey("GOFLAGS"));
         Assert.Empty(runner.ProcessSpecs);
+        Assert.Empty(runner.Commands);
     }
 
     [Theory]
@@ -444,14 +638,14 @@ public class GoRunDebuggingTests(ITestOutputHelper outputHelper)
         var environment = await EnvironmentVariableEvaluator.GetEnvironmentVariablesAsync(go.Resource, serviceProvider: app.Services);
         var arguments = await ArgumentEvaluator.GetArgumentListAsync(go.Resource, app.Services);
         var processRunner = app.Services.GetRequiredService<IProcessRunner>();
-        using var document = await RunGoAsync(processRunner, go.Resource, arguments, environment);
+        using var document = await RunGoAsync(processRunner, go.Resource, arguments, environment, TestContext.Current.CancellationToken);
         if (expectedDwarf is null)
         {
             var nativeEnvironment = new Dictionary<string, string>(environment, environment.Comparer)
             {
                 ["GOFLAGS"] = flags
             };
-            using var nativeDocument = await RunGoAsync(processRunner, go.Resource, ["run", "."], nativeEnvironment);
+            using var nativeDocument = await RunGoAsync(processRunner, go.Resource, ["run", "."], nativeEnvironment, TestContext.Current.CancellationToken);
             expectedDwarf = nativeDocument.RootElement.GetProperty("dwarf").GetBoolean();
         }
 
@@ -462,21 +656,41 @@ public class GoRunDebuggingTests(ITestOutputHelper outputHelper)
     }
 
     private static async Task<JsonDocument> RunGoAsync(
-        IProcessRunner processRunner, GoAppResource resource, IReadOnlyList<string> arguments, Dictionary<string, string> environment)
+        IProcessRunner processRunner, GoAppResource resource, IReadOnlyList<string> arguments,
+        Dictionary<string, string> environment, CancellationToken cancellationToken)
     {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, deadline.Token);
         var output = new StringBuilder();
-        var (resultTask, process) = processRunner.Run(new ProcessSpec(resource.Command)
+        var diagnostics = new ProcessOutputCapture(ProcessSpec.DefaultRetainedOutputLineCount);
+        var exitCode = await processRunner.CreateExecution(new ProcessCommand(resource.Command)
         {
             WorkingDirectory = resource.WorkingDirectory,
-            ArgumentList = arguments,
+            Arguments = arguments,
             EnvironmentVariables = environment,
-            ResolveExecutablePath = true,
-            OnOutputData = line => output.AppendLine(line)
-        });
-        await using (process)
+            ResolveExecutablePath = true
+        })
+            .DecodeChars(Encoding.UTF8)
+            .AppendStandardOutput(output)
+            .FrameLines()
+            .OnStandardOutput(line =>
+            {
+                if (line.Length > 0)
+                {
+                    diagnostics.Add(line);
+                }
+            })
+            .OnStandardError(line =>
+            {
+                if (line.Length > 0)
+                {
+                    diagnostics.Add(line);
+                }
+            })
+            .ExecuteAsync(cancellation.Token);
+        if (exitCode != 0)
         {
-            var result = await resultTask.WaitAsync(TimeSpan.FromMinutes(2));
-            Assert.Equal(0, result.ExitCode);
+            throw new InvalidOperationException($"Go command '{resource.Command}' exited with code {exitCode}.{Environment.NewLine}{diagnostics.GetFormattedOutput()}");
         }
 
         return JsonDocument.Parse(output.ToString());
