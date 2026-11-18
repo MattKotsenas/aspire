@@ -2,6 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Text.Json;
+using Aspire.Hosting.Utils;
 using Microsoft.Extensions.Logging;
 
 namespace Aspire.Hosting;
@@ -15,10 +16,11 @@ internal static class BlazorWasmAppBuilder
     /// <summary>
     /// Builds a single WASM app via <c>dotnet build</c>.
     /// </summary>
-    public static async Task<bool> BuildAsync(string projectPath, ILogger logger, CancellationToken cancellationToken)
+    public static async Task<bool> BuildAsync(IProcessRunner processRunner, string projectPath, ILogger logger, CancellationToken cancellationToken)
     {
         BlazorGatewayLog.BuildStarted(logger, projectPath);
         var result = await BlazorDotNetCliRunner.RunAsync(
+            processRunner,
             projectPath,
             "build",
             [],
@@ -50,9 +52,10 @@ internal static class BlazorWasmAppBuilder
     /// discover the endpoints and development manifest file paths via <c>-getProperty</c>.
     /// </summary>
     public static async Task<(string endpointsManifest, string runtimeManifest)?> GetManifestPathsAsync(
-        string projectPath, ILogger logger, CancellationToken cancellationToken)
+        IProcessRunner processRunner, string projectPath, ILogger logger, CancellationToken cancellationToken)
     {
         var result = await BlazorDotNetCliRunner.RunAsync(
+            processRunner,
             projectPath,
             "msbuild",
             [
@@ -110,11 +113,13 @@ internal static class BlazorWasmAppBuilder
     }
 
     public static async Task<MSBuildManifestProperties?> GetPublishPropertiesAsync(
+        IProcessRunner processRunner,
         string projectPath,
         ILogger logger,
         CancellationToken cancellationToken)
     {
         var result = await BlazorDotNetCliRunner.RunAsync(
+            processRunner,
             projectPath,
             "msbuild",
             [

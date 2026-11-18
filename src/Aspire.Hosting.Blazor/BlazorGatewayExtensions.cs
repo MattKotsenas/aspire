@@ -7,6 +7,7 @@ using Aspire.Dashboard.Model;
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.ApplicationModel.Docker;
 using Aspire.Hosting.Dotnet;
+using Aspire.Hosting.Utils;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -426,7 +427,11 @@ public static class BlazorGatewayExtensions
 
                 Directory.CreateDirectory(outputDir);
 
-                var manifests = await BuildAndDiscoverManifestsAsync(registeredApps, context.Logger, context.CancellationToken).ConfigureAwait(false);
+                var manifests = await BuildAndDiscoverManifestsAsync(
+                    context.ExecutionContext.Services.GetRequiredService<IProcessRunner>(),
+                    registeredApps,
+                    context.Logger,
+                    context.CancellationToken).ConfigureAwait(false);
                 if (manifests == null)
                 {
                     return;
@@ -559,20 +564,20 @@ public static class BlazorGatewayExtensions
     }
 
     private static async Task<List<AppManifestPaths>?> BuildAndDiscoverManifestsAsync(
-        List<GatewayAppRegistration> apps, ILogger logger, CancellationToken ct)
+        IProcessRunner processRunner, List<GatewayAppRegistration> apps, ILogger logger, CancellationToken ct)
     {
         var result = new List<AppManifestPaths>();
 
         foreach (var reg in apps)
         {
-            var success = await BlazorWasmAppBuilder.BuildAsync(reg.Resource.ProjectPath, logger, ct).ConfigureAwait(false);
+            var success = await BlazorWasmAppBuilder.BuildAsync(processRunner, reg.Resource.ProjectPath, logger, ct).ConfigureAwait(false);
             if (!success)
             {
                 BlazorGatewayLog.FailedToBuild(logger, reg.Resource.Name);
                 return null;
             }
 
-            var paths = await BlazorWasmAppBuilder.GetManifestPathsAsync(reg.Resource.ProjectPath, logger, ct).ConfigureAwait(false);
+            var paths = await BlazorWasmAppBuilder.GetManifestPathsAsync(processRunner, reg.Resource.ProjectPath, logger, ct).ConfigureAwait(false);
             if (paths == null)
             {
                 BlazorGatewayLog.FailedToResolveManifests(logger, reg.Resource.Name);
@@ -648,6 +653,7 @@ public static class BlazorGatewayExtensions
                 ? typedLogger
                 : Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance;
             var properties = await BlazorWasmAppBuilder.GetPublishPropertiesAsync(
+                context.Services.GetRequiredService<IProcessRunner>(),
                 wasmApp.Resource.ProjectPath,
                 logger,
                 context.CancellationToken).ConfigureAwait(false)

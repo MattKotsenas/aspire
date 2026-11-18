@@ -86,6 +86,8 @@ public class ProcessEventExtensionsTests
         ]);
         var observed = new List<string>();
         var pipeline = source
+            .OnStarted(processId => observed.Add("started-1:" + processId))
+            .OnStarted(processId => observed.Add("started-2:" + processId))
             .OnStandardOutput(text => observed.Add("output-1:" + text.ToString()))
             .OnStandardOutput(text => observed.Add("output-2:" + text.ToString()))
             .OnStandardError(text => observed.Add("error:" + text.ToString()));
@@ -101,7 +103,7 @@ public class ProcessEventExtensionsTests
         }
 
         Assert.Equal(
-            ["output-1:first\n", "output-2:first\n", "error:warning\n", "output-1:last\n", "output-2:last\n"],
+            ["started-1:1", "started-2:1", "output-1:first\n", "output-2:first\n", "error:warning\n", "output-1:last\n", "output-2:last\n"],
             observed);
         Assert.Equal(1, source.DisposeCount);
     }
@@ -198,6 +200,7 @@ public class ProcessEventExtensionsTests
     [InlineData("bytes")]
     [InlineData("chars")]
     [InlineData("lines")]
+    [InlineData("started")]
     public async Task ObserverAndCleanupFailuresSurviveComposition(string stage)
     {
         var observerFailure = new InvalidOperationException("Observation failed.");
@@ -213,6 +216,8 @@ public class ProcessEventExtensionsTests
         Assert.Equal(0, source.DisposeCount);
         Func<Task> read = stage switch
         {
+            "started" => () => source.OnStarted(_ => throw observerFailure).DecodeChars(Encoding.UTF8)
+                .FrameLines().ExecuteAsync(TestContext.Current.CancellationToken),
             "bytes" => () => source.OnStandardOutput(_ => throw observerFailure).DecodeChars(Encoding.UTF8)
                 .ExecuteAsync(TestContext.Current.CancellationToken),
             "chars" => () => source.DecodeChars(Encoding.UTF8).OnStandardOutput(_ => throw observerFailure)

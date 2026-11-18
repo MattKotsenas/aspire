@@ -213,6 +213,7 @@ public static class BlazorHostedExtensions
                     }
 
                     annotation.DebuggerClientProjectPath = await ResolveBlazorWasmClientProjectPathAsync(
+                        beforeStartEvent.Services.GetRequiredService<IProcessRunner>(),
                         projectMetadata.ProjectPath,
                         dotnetExecutablePath,
                         logger,
@@ -283,6 +284,7 @@ public static class BlazorHostedExtensions
     /// Blazor WebAssembly project and returns the matching project path.
     /// </summary>
     private static async Task<string?> ResolveBlazorWasmClientProjectPathAsync(
+        IProcessRunner processRunner,
         string serverProjectPath,
         string dotnetExecutablePath,
         ILogger logger,
@@ -300,6 +302,7 @@ public static class BlazorHostedExtensions
         // The target returns each evaluated WASM ProjectReference. An empty collection is valid
         // and keeps the browser debugging command hidden.
         var result = await BlazorDotNetCliRunner.RunAsync(
+            processRunner,
             dotnetExecutablePath,
             serverProjectPath,
             "msbuild",

@@ -12,6 +12,23 @@ namespace Aspire.Hosting.Utils;
 internal static class ProcessEventExtensions
 {
     /// <summary>
+    /// Observes process startup without changing or removing events.
+    /// </summary>
+    /// <typeparam name="T">The event payload type.</typeparam>
+    /// <param name="events">The deferred process events to observe.</param>
+    /// <param name="observer">The callback invoked with the process ID during consumption.</param>
+    /// <returns>A deferred stream that forwards the original events after observation.</returns>
+    public static IAsyncEnumerable<ProcessEvent<T>> OnStarted<T>(
+        this IAsyncEnumerable<ProcessEvent<T>> events, Action<int> observer)
+        => Observe(events, observer, static (item, callback) =>
+        {
+            if (item is ProcessEvent<T>.Started(var processId))
+            {
+                callback(processId);
+            }
+        });
+
+    /// <summary>
     /// Observes standard output without changing or removing events.
     /// </summary>
     /// <typeparam name="T">The event payload type.</typeparam>
@@ -45,10 +62,10 @@ internal static class ProcessEventExtensions
             }
         });
 
-    private static async IAsyncEnumerable<ProcessEvent<T>> Observe<T>(
+    private static async IAsyncEnumerable<ProcessEvent<T>> Observe<T, TCallback>(
         IAsyncEnumerable<ProcessEvent<T>> events,
-        Action<T> observer,
-        Action<ProcessEvent<T>, Action<T>> observe,
+        Action<TCallback> observer,
+        Action<ProcessEvent<T>, Action<TCallback>> observe,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         var enumerator = events.GetAsyncEnumerator(cancellationToken);

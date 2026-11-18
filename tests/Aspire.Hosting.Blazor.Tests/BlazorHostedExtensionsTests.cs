@@ -6,6 +6,7 @@
 
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.JavaScript;
+using Aspire.Hosting.Testing;
 using Aspire.Hosting.Tests.Utils;
 using Aspire.Hosting.Utils;
 using Microsoft.Extensions.DependencyInjection;
@@ -230,6 +231,62 @@ public class BlazorHostedExtensionsTests(ITestOutputHelper testOutputHelper)
         Assert.Equal(ResourceCommandState.Enabled, debugCommand.UpdateState(CreateRunningCommandStateContext()));
         Assert.Equal(1, sdkVersionProvider.CallCount);
         Assert.Equal(BlazorDotNetCliRunner.GetExecutablePath(), Assert.Single(sdkVersionProvider.ExecutablePaths));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ProxyService_CustomRunnerControlsClientDiscovery(bool hasClient)
+    {
+        using var fileSystemService = new TestFileSystemService();
+        using var tempDirectory = fileSystemService.TempDirectory.CreateTempSubdirectory("blazor-hosted");
+        var serverProjectPath = Path.Combine(tempDirectory.Path, "Server.csproj");
+        File.WriteAllText(serverProjectPath, "<Project />");
+        using var builder = TestDistributedApplicationBuilder.Create(testOutputHelper);
+        ConfigureBrowserDebugging(builder);
+        builder.Services.AddSingleton<IDotnetSdkVersionProvider>(new TestDotnetSdkVersionProvider("11.0.100-rc.1"));
+
+        var weatherApi = builder.AddProject<TestProjectMetadata>("weatherapi");
+        var host = builder.AddProject("blazorapp", serverProjectPath, options => options.ExcludeLaunchProfile = true)
+            .WithHttpsEndpoint()
+            .WithEndpoint("https", endpoint => endpoint.AllocatedEndpoint = new(endpoint, "localhost", 7443), createIfNotExists: false)
+            .ProxyBlazorService(weatherApi);
+        var debugCommand = Assert.Single(
+            host.Resource.Annotations.OfType<ResourceCommandAnnotation>(),
+            annotation => annotation.Name == "debug-in-browser");
+        Assert.Equal(ResourceCommandState.Hidden, debugCommand.UpdateState(CreateRunningCommandStateContext()));
+
+        // Register after configuring the proxy: discovery must use the final application services.
+        var runner = new TestProcessRunner();
+        var output = hasClient
+            ? """{"Items":{"WebAssemblyProjectReference":[{"Identity":"Client/Client.csproj"}]}}"""
+            : """{"Items":{"WebAssemblyProjectReference":[]}}""";
+        var source = new FakeEventStream<byte>(
+        [
+            Emit<byte>.Started(42),
+            Emit<byte>.Stdout(System.Text.Encoding.UTF8.GetBytes(output)),
+            Emit<byte>.StdoutCompleted(),
+            Emit<byte>.StderrCompleted(),
+            Emit<byte>.Exited(0)
+        ]);
+        runner.Enqueue(source);
+        builder.Services.AddSingleton<IProcessRunner>(runner);
+        Assert.Empty(runner.Commands);
+
+        using var app = builder.Build();
+        await PublishBeforeStartEventAsync(builder, app);
+
+        Assert.Equal(hasClient ? ResourceCommandState.Enabled : ResourceCommandState.Hidden,
+            debugCommand.UpdateState(CreateRunningCommandStateContext()));
+        var debuggerResource = Assert.Single(builder.Resources.OfType<BrowserDebuggerResource>());
+        if (hasClient)
+        {
+            var launchConfiguration = await CreateBrowserLaunchConfigurationAsync(debuggerResource);
+            Assert.Equal(Path.GetFullPath("Client/Client.csproj", tempDirectory.Path), launchConfiguration.WebRoot);
+        }
+        Assert.Equal(
+            ["msbuild", serverProjectPath, "-t:ResolveWebAssemblyProjectReferences", "-getItem:WebAssemblyProjectReference", "-nologo"],
+            Assert.Single(runner.Commands).Arguments);
     }
 
     [Theory]
@@ -522,6 +579,7 @@ public class BlazorHostedExtensionsTests(ITestOutputHelper testOutputHelper)
         var wasmApp = builder.AddBlazorWasmApp("store", "Store/Store.csproj");
         gateway.WithBlazorClientApp(wasmApp, proxyTelemetry: true);
 
+        using var app = builder.Build();
         var (_, sink) = await GetEnvironmentVariablesWithLogs(gateway.Resource, builder);
 
         Assert.Contains(sink.Writes, msg =>
@@ -543,6 +601,7 @@ public class BlazorHostedExtensionsTests(ITestOutputHelper testOutputHelper)
         var wasmApp = builder.AddBlazorWasmApp("store", "Store/Store.csproj");
         gateway.WithBlazorClientApp(wasmApp, proxyTelemetry: true);
 
+        using var app = builder.Build();
         var (_, sink) = await GetEnvironmentVariablesWithLogs(gateway.Resource, builder);
 
         Assert.DoesNotContain(sink.Writes, msg =>
@@ -621,6 +680,7 @@ public class BlazorHostedExtensionsTests(ITestOutputHelper testOutputHelper)
     private static async Task RestoreProjectAsync(string projectPath)
     {
         var result = await BlazorDotNetCliRunner.RunAsync(
+            new DefaultProcessRunner(),
             projectPath,
             "restore",
             ["--ignore-failed-sources", "-nologo"],

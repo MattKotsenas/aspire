@@ -3,7 +3,7 @@
 
 using System.ComponentModel;
 using System.Text;
-using Aspire.Hosting.Dcp.Process;
+using Aspire.Hosting.Utils;
 
 namespace Aspire.Hosting;
 
@@ -19,6 +19,7 @@ internal static class BlazorDotNetCliRunner
         dotnetHostPath is { Length: > 0 } ? dotnetHostPath : "dotnet";
 
     public static async Task<BlazorDotNetCliResult> RunAsync(
+        IProcessRunner processRunner,
         string projectPath,
         string command,
         IReadOnlyList<string> arguments,
@@ -26,6 +27,7 @@ internal static class BlazorDotNetCliRunner
         CancellationToken cancellationToken)
     {
         return await RunAsync(
+            processRunner,
             GetExecutablePath(),
             projectPath,
             command,
@@ -35,6 +37,7 @@ internal static class BlazorDotNetCliRunner
     }
 
     public static async Task<BlazorDotNetCliResult> RunAsync(
+        IProcessRunner processRunner,
         string executablePath,
         string projectPath,
         string command,
@@ -42,54 +45,59 @@ internal static class BlazorDotNetCliRunner
         bool machineReadableOutput,
         CancellationToken cancellationToken)
     {
-        var argumentList = new List<string>(arguments.Count + 2)
-        {
-            command,
-            projectPath
-        };
-        argumentList.AddRange(arguments);
-
         var standardOutput = new StringBuilder();
         var standardError = new StringBuilder();
-        var processSpec = new ProcessSpec(executablePath)
+        var processCommand = new ProcessCommand(executablePath)
         {
             WorkingDirectory = Path.GetDirectoryName(projectPath)!,
-            ArgumentList = argumentList,
-            ThrowOnNonZeroReturnCode = false,
-            OnOutputData = line => standardOutput.AppendLine(line),
-            OnErrorData = line => standardError.AppendLine(line)
+            Arguments = [command, projectPath, .. arguments]
         };
         if (machineReadableOutput)
         {
             // MSBuild queries emit JSON on stdout. Disable unrelated CLI messages that could
             // corrupt the machine-readable output before callers have a chance to parse it.
-            processSpec.EnvironmentVariables["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1";
-            processSpec.EnvironmentVariables["DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE"] = "1";
+            processCommand.EnvironmentVariables["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1";
+            processCommand.EnvironmentVariables["DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE"] = "1";
         }
 
-        Task<ProcessResult> pendingResult;
-        IAsyncDisposable processDisposable;
+        var started = false;
+        int exitCode;
         try
         {
-            (pendingResult, processDisposable) = ProcessUtil.Run(processSpec);
+            exitCode = await processRunner.CreateExecution(processCommand)
+                .OnStarted(_ => started = true)
+                .DecodeChars(Encoding.UTF8)
+                .FrameLines()
+                // Preserve the legacy callbacks' normalization: discard empty records, retain
+                // whitespace, and append a native newline even to the final record at EOF.
+                .OnStandardOutput(line =>
+                {
+                    if (line.Length > 0)
+                    {
+                        standardOutput.AppendLine(line);
+                    }
+                })
+                .OnStandardError(line =>
+                {
+                    if (line.Length > 0)
+                    {
+                        standardError.AppendLine(line);
+                    }
+                })
+                .ExecuteAsync(cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is InvalidOperationException or Win32Exception)
+        catch (Exception ex) when (!started && ex is InvalidOperationException or Win32Exception)
         {
             return new(executablePath, false, -1, "", "", ex);
         }
 
-        await using (processDisposable.ConfigureAwait(false))
-        {
-            var result = await pendingResult.WaitAsync(cancellationToken).ConfigureAwait(false);
-
-            return new(
-                executablePath,
-                true,
-                result.ExitCode,
-                standardOutput.ToString(),
-                standardError.ToString(),
-                null);
-        }
+        return new(
+            executablePath,
+            true,
+            exitCode,
+            standardOutput.ToString(),
+            standardError.ToString(),
+            null);
     }
 }
 

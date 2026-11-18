@@ -418,6 +418,7 @@ public class AddBlazorGatewayTests(ITestOutputHelper testOutputHelper)
             """);
 
         var properties = await BlazorWasmAppBuilder.GetPublishPropertiesAsync(
+            new DefaultProcessRunner(),
             projectPath,
             NullLogger.Instance,
             CancellationToken.None);
@@ -439,7 +440,7 @@ public class AddBlazorGatewayTests(ITestOutputHelper testOutputHelper)
             $"""<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFrameworks>{targetFrameworks}</TargetFrameworks></PropertyGroup></Project>""");
 
         var properties = await BlazorWasmAppBuilder.GetPublishPropertiesAsync(
-            projectPath, NullLogger.Instance, TestContext.Current.CancellationToken);
+            new DefaultProcessRunner(), projectPath, NullLogger.Instance, TestContext.Current.CancellationToken);
 
         Assert.NotNull(properties);
         Assert.Equal(expectedFramework, properties.TargetFramework);
