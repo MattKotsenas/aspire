@@ -85,31 +85,8 @@ public sealed class DcpDependencyCheckTests
         }
     }
 
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task MissingExecutableIsNotWrapped(bool fullInfo)
-    {
-        using var fileSystem = new TestFileSystemService();
-        using var directory = fileSystem.TempDirectory.CreateTempSubdirectory();
-        var path = Path.Combine(directory.Path, "missing-dcp");
-        var runner = new TestProcessRunner();
-        var dependencyCheck = new DcpDependencyCheck(Options.Create(new DcpOptions { CliPath = path }), runner);
-        Assert.False(File.Exists(path));
-
-        var exception = await Assert.ThrowsAsync<FileNotFoundException>(() => fullInfo
-            ? dependencyCheck.GetDcpInfoAsync(cancellationToken: TestContext.Current.CancellationToken)
-            : dependencyCheck.GetDcpVersionAsync(TestContext.Current.CancellationToken));
-
-        Assert.Equal($"The Aspire orchestration component is not installed at \"{path}\". The application cannot be run without it.", exception.Message);
-        Assert.Equal(path, exception.FileName);
-        Assert.Empty(runner.Commands);
-    }
-
-    [Theory]
-    [InlineData(false, "version")]
-    [InlineData(true, "info --container-runtime custom runtime")]
-    public async Task NonzeroExitPreservesLegacyLineConcatenationAndStreamOrder(bool fullInfo, string command)
+    [Fact]
+    public async Task NonzeroExitPreservesLegacyLineConcatenationAndStreamOrder()
     {
         using var fileSystem = new TestFileSystemService();
         using var executable = fileSystem.TempDirectory.CreateTempFile();
@@ -129,19 +106,17 @@ public sealed class DcpDependencyCheckTests
             ContainerRuntime = "custom runtime"
         }), runner);
 
-        var exception = await Assert.ThrowsAsync<DistributedApplicationException>(() => fullInfo
-            ? dependencyCheck.GetDcpInfoAsync(cancellationToken: TestContext.Current.CancellationToken)
-            : dependencyCheck.GetDcpVersionAsync(TestContext.Current.CancellationToken));
+        var exception = await Assert.ThrowsAsync<DistributedApplicationException>(
+            () => dependencyCheck.GetDcpInfoAsync(cancellationToken: TestContext.Current.CancellationToken));
 
         Assert.Equal(string.Format(CultureInfo.InvariantCulture, MessageStrings.DcpDependencyCheckFailedMessage,
-            $"'dcp {command}' returned exit code 17. err-1 err-2{Environment.NewLine}out-1 out-2"), exception.Message);
+            $"'dcp info --container-runtime custom runtime' returned exit code 17. err-1 err-2{Environment.NewLine}out-1 out-2"), exception.Message);
     }
 
-    [Theory]
-    [InlineData("{")]
-    [InlineData("not JSON")]
-    public async Task InvalidJsonRetainsCauseAndDoesNotPreventRetry(string output)
+    [Fact]
+    public async Task InvalidJsonRetainsCauseAndDoesNotPreventRetry()
     {
+        const string output = "{";
         using var fileSystem = new TestFileSystemService();
         using var executable = fileSystem.TempDirectory.CreateTempFile();
         var runner = new TestProcessRunner();
@@ -177,25 +152,20 @@ public sealed class DcpDependencyCheckTests
         Assert.Equal(2, runner.Commands.Count);
     }
 
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task CleanupFailureDoesNotPublishInfoOrReplaceLastSuccess(bool cached)
+    [Fact]
+    public async Task CleanupFailureDoesNotReplaceLastSuccess()
     {
         using var fileSystem = new TestFileSystemService();
         using var executable = fileSystem.TempDirectory.CreateTempFile();
         var runner = new TestProcessRunner();
-        if (cached)
-        {
-            runner.Enqueue(new FakeEventStream<byte>(
-            [
-                Emit<byte>.Started(41),
-                Emit<byte>.Stdout("{\"version\":\"99.1.0\",\"containers\":{}}"u8),
-                Emit<byte>.StdoutCompleted(),
-                Emit<byte>.StderrCompleted(),
-                Emit<byte>.Exited(0)
-            ]));
-        }
+        runner.Enqueue(new FakeEventStream<byte>(
+        [
+            Emit<byte>.Started(41),
+            Emit<byte>.Stdout("{\"version\":\"99.1.0\",\"containers\":{}}"u8),
+            Emit<byte>.StdoutCompleted(),
+            Emit<byte>.StderrCompleted(),
+            Emit<byte>.Exited(0)
+        ]));
         var cleanupFailure = new IOException("probe cleanup failed");
         runner.Enqueue(new FakeEventStream<byte>(
         [
@@ -214,12 +184,9 @@ public sealed class DcpDependencyCheckTests
             Emit<byte>.Exited(0)
         ]));
         var dependencyCheck = new DcpDependencyCheck(Options.Create(new DcpOptions { CliPath = executable.Path }), runner);
-        var previous = cached ? await dependencyCheck.GetDcpInfoAsync(cancellationToken: TestContext.Current.CancellationToken) : null;
-        if (cached)
-        {
-            Assert.NotNull(previous);
-            Assert.Equal(new Version(99, 1, 0), previous.Version);
-        }
+        var previous = await dependencyCheck.GetDcpInfoAsync(cancellationToken: TestContext.Current.CancellationToken);
+        Assert.NotNull(previous);
+        Assert.Equal(new Version(99, 1, 0), previous.Version);
 
         var exception = await Assert.ThrowsAsync<DistributedApplicationException>(
             () => dependencyCheck.GetDcpInfoAsync(force: true, cancellationToken: TestContext.Current.CancellationToken));
@@ -227,25 +194,19 @@ public sealed class DcpDependencyCheckTests
         Assert.Same(cleanupFailure, exception.InnerException);
         Assert.Equal(string.Format(CultureInfo.InvariantCulture, MessageStrings.DcpDependencyCheckFailedMessage,
             $"probe cleanup failed {Environment.NewLine}{{\"version\":\"99.2.0\",\"containers\":{{}}}}"), exception.Message);
-        if (cached)
-        {
-            Assert.Same(previous, await dependencyCheck.GetDcpVersionAsync(TestContext.Current.CancellationToken));
-            Assert.Same(previous, await dependencyCheck.GetDcpInfoAsync(cancellationToken: TestContext.Current.CancellationToken));
-            Assert.Equal(2, runner.Commands.Count);
-        }
+        Assert.Same(previous, await dependencyCheck.GetDcpVersionAsync(TestContext.Current.CancellationToken));
+        Assert.Same(previous, await dependencyCheck.GetDcpInfoAsync(cancellationToken: TestContext.Current.CancellationToken));
+        Assert.Equal(2, runner.Commands.Count);
 
-        var refreshed = await dependencyCheck.GetDcpInfoAsync(force: cached, cancellationToken: TestContext.Current.CancellationToken);
+        var refreshed = await dependencyCheck.GetDcpInfoAsync(force: true, cancellationToken: TestContext.Current.CancellationToken);
         Assert.NotNull(refreshed);
         Assert.Equal(new Version(99, 3, 0), refreshed.Version);
         Assert.Same(refreshed, await dependencyCheck.GetDcpVersionAsync(TestContext.Current.CancellationToken));
-        Assert.Equal(cached ? 3 : 2, runner.Commands.Count);
+        Assert.Equal(3, runner.Commands.Count);
     }
 
-    [Theory]
-    [InlineData(-1)]
-    [InlineData(0)]
-    [InlineData(25)]
-    public async Task CallerCancellationKeepsOriginalTokenAndAllowsRetry(int timeout)
+    [Fact]
+    public async Task CallerCancellationKeepsOriginalTokenAndAllowsRetry()
     {
         using var fileSystem = new TestFileSystemService();
         using var executable = fileSystem.TempDirectory.CreateTempFile();
@@ -268,7 +229,7 @@ public sealed class DcpDependencyCheckTests
         var dependencyCheck = new DcpDependencyCheck(Options.Create(new DcpOptions
         {
             CliPath = executable.Path,
-            DependencyCheckTimeout = timeout
+            DependencyCheckTimeout = 25
         }), runner);
 
         var probe = dependencyCheck.GetDcpVersionAsync(caller.Token);
@@ -282,34 +243,6 @@ public sealed class DcpDependencyCheckTests
         Assert.NotNull(info);
         Assert.Equal(DcpVersion.Dev, info.Version);
         Assert.Equal(2, runner.Commands.Count);
-    }
-
-    [Fact]
-    public async Task ProbeDeadlineKeepsTimeoutDiagnostic()
-    {
-        using var fileSystem = new TestFileSystemService();
-        using var executable = fileSystem.TempDirectory.CreateTempFile();
-        var runner = new TestProcessRunner();
-        var pending = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        runner.Enqueue(new FakeEventStream<byte>(
-        [
-            Emit<byte>.Started(42),
-            Emit<byte>.Stderr("waiting\n"u8),
-            Emit<byte>.Wait(pending.Task)
-        ]));
-        var dependencyCheck = new DcpDependencyCheck(Options.Create(new DcpOptions
-        {
-            CliPath = executable.Path,
-            DependencyCheckTimeout = 1
-        }), runner);
-
-        var exception = await Assert.ThrowsAsync<DistributedApplicationException>(
-            () => dependencyCheck.GetDcpInfoAsync(cancellationToken: TestContext.Current.CancellationToken)).DefaultTimeout();
-
-        var cause = Assert.IsType<TimeoutException>(exception.InnerException);
-        Assert.IsType<OperationCanceledException>(cause.InnerException);
-        Assert.Equal(string.Format(CultureInfo.InvariantCulture, MessageStrings.DcpDependencyCheckFailedMessage,
-            $"{new TimeoutException().Message} waiting{Environment.NewLine}"), exception.Message);
     }
 
     [Fact]

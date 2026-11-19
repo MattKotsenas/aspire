@@ -88,7 +88,7 @@ internal sealed partial class DcpDependencyCheck : IDcpDependencyCheckService
             throw new FileNotFoundException($"The Aspire orchestration component is not installed at \"{dcpPath}\". The application cannot be run without it.", dcpPath);
         }
 
-        var commandArguments = string.Join(" ", arguments);
+        var displayArgs = string.Join(" ", arguments);
         using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var outputStringBuilder = new StringBuilder();
         var errorStringBuilder = new StringBuilder();
@@ -129,7 +129,7 @@ internal sealed partial class DcpDependencyCheck : IDcpDependencyCheckService
                 throw new DistributedApplicationException(string.Format(
                     CultureInfo.InvariantCulture,
                     MessageStrings.DcpDependencyCheckFailedMessage,
-                    $"'dcp {commandArguments}' returned exit code {exitCode}. {errorStringBuilder.ToString()}{Environment.NewLine}{outputStringBuilder.ToString()}"
+                    $"'dcp {displayArgs}' returned exit code {exitCode}. {errorStringBuilder.ToString()}{Environment.NewLine}{outputStringBuilder.ToString()}"
                 ));
             }
 
@@ -141,7 +141,7 @@ internal sealed partial class DcpDependencyCheck : IDcpDependencyCheckService
                 throw new DistributedApplicationException(string.Format(
                     CultureInfo.InvariantCulture,
                     MessageStrings.DcpDependencyCheckFailedMessage,
-                    $"'dcp {commandArguments}' did not return any information. {errorStringBuilder.ToString()}"
+                    $"'dcp {displayArgs}' did not return any information. {errorStringBuilder.ToString()}"
                 ));
             }
 

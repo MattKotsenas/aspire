@@ -12,6 +12,7 @@ using Aspire.Hosting.Dcp;
 using Aspire.Hosting.Diagnostics;
 using Aspire.Hosting.Resources;
 using Aspire.Hosting.Tests.Utils;
+using Aspire.Hosting.Utils;
 using Aspire.Tests;
 using Microsoft.AspNetCore.InternalTesting;
 using Microsoft.DotNet.RemoteExecutor;
@@ -772,7 +773,7 @@ public sealed class DcpHostNotificationTests
         try
         {
             var dcpOptions = Options.Create(new DcpOptions { CliPath = CreateFakeDcpWithHangingInfo(dcpDir.FullName), DependencyCheckTimeout = 2 });
-            var dependencyCheck = new DcpDependencyCheck(dcpOptions, new Aspire.Hosting.Utils.DefaultProcessRunner());
+            var dependencyCheck = new DcpDependencyCheck(dcpOptions, new DefaultProcessRunner());
             var model = new DistributedApplicationModel(new ResourceCollection([new ExecutableResource("app", "app", ".")]));
             var dcpHost = CreateDcpHostForDependencyCheckTests(dcpOptions, dependencyCheck, model);
 
@@ -798,10 +799,13 @@ public sealed class DcpHostNotificationTests
             var dcpOptions = Options.Create(new DcpOptions { CliPath = CreateFakeDcpWithHangingInfo(dcpDir.FullName), DependencyCheckTimeout = 2 });
             using var app = CreateAppWithContainers();
             var model = app.Services.GetRequiredService<DistributedApplicationModel>();
-            var dcpHost = CreateDcpHostForDependencyCheckTests(dcpOptions, new DcpDependencyCheck(dcpOptions, new Aspire.Hosting.Utils.DefaultProcessRunner()), model);
+            var dcpHost = CreateDcpHostForDependencyCheckTests(dcpOptions, new DcpDependencyCheck(dcpOptions, new DefaultProcessRunner()), model);
 
             var ex = await Assert.ThrowsAsync<DistributedApplicationException>(() => dcpHost.EnsureDcpContainerRuntimeAsync(CancellationToken.None)).DefaultTimeout();
             Assert.StartsWith(string.Format(CultureInfo.InvariantCulture, MessageStrings.DcpDependencyCheckFailedMessage, string.Empty).TrimEnd(), ex.Message);
+            var cause = Assert.IsType<TimeoutException>(ex.InnerException);
+            Assert.IsType<OperationCanceledException>(cause.InnerException);
+            Assert.Contains(new TimeoutException().Message, ex.Message);
         }
         finally
         {
@@ -816,7 +820,7 @@ public sealed class DcpHostNotificationTests
         try
         {
             var cliPath = Path.Combine(dcpDir.FullName, OperatingSystem.IsWindows() ? "dcp.cmd" : "dcp");
-            var dependencyCheck = new DcpDependencyCheck(Options.Create(new DcpOptions { CliPath = cliPath, DependencyCheckTimeout = 10 }), new Aspire.Hosting.Utils.DefaultProcessRunner());
+            var dependencyCheck = new DcpDependencyCheck(Options.Create(new DcpOptions { CliPath = cliPath, DependencyCheckTimeout = 10 }), new DefaultProcessRunner());
 
             await Assert.ThrowsAsync<FileNotFoundException>(() => dependencyCheck.GetDcpVersionAsync()).DefaultTimeout();
 
@@ -844,7 +848,7 @@ public sealed class DcpHostNotificationTests
         try
         {
             var dcpOptions = Options.Create(new DcpOptions { CliPath = CreateFakeDcpWithOutput(dcpDir.FullName, output), DependencyCheckTimeout = 10 });
-            var dependencyCheck = new DcpDependencyCheck(dcpOptions, new Aspire.Hosting.Utils.DefaultProcessRunner());
+            var dependencyCheck = new DcpDependencyCheck(dcpOptions, new DefaultProcessRunner());
 
             var ex = await Assert.ThrowsAsync<DistributedApplicationException>(
                 () => fullInfo ? dependencyCheck.GetDcpInfoAsync() : dependencyCheck.GetDcpVersionAsync()).DefaultTimeout();
