@@ -6,8 +6,8 @@ using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using Aspire.Hosting.Dcp.Process;
 using Aspire.Hosting.Resources;
+using Aspire.Hosting.Utils;
 using Aspire.Shared;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -20,13 +20,15 @@ internal sealed partial class DcpDependencyCheck : IDcpDependencyCheckService
     private static partial Regex VersionRegex();
 
     private readonly DcpOptions _dcpOptions;
+    private readonly IProcessRunner _processRunner;
     private readonly SemaphoreSlim _lock = new SemaphoreSlim(1, 1);
     // The last successful DCP check, or null if no check has succeeded yet. Failed checks leave it unchanged.
     private DcpInfo? _dcpInfo;
 
-    public DcpDependencyCheck(IOptions<DcpOptions> dcpOptions)
+    public DcpDependencyCheck(IOptions<DcpOptions> dcpOptions, IProcessRunner processRunner)
     {
         _dcpOptions = dcpOptions.Value;
+        _processRunner = processRunner;
     }
 
     public async Task<DcpInfo?> GetDcpInfoAsync(bool force = false, CancellationToken cancellationToken = default)
@@ -41,12 +43,10 @@ internal sealed partial class DcpDependencyCheck : IDcpDependencyCheckService
                 return _dcpInfo;
             }
 
-            var arguments = "info";
             var containerRuntime = _dcpOptions.ContainerRuntime;
-            if (!string.IsNullOrEmpty(containerRuntime))
-            {
-                arguments += $" --container-runtime {containerRuntime}";
-            }
+            string[] arguments = string.IsNullOrEmpty(containerRuntime)
+                ? ["info"]
+                : ["info", "--container-runtime", containerRuntime];
 
             _dcpInfo = await RunDcpAsync(arguments, cancellationToken).ConfigureAwait(false);
             return _dcpInfo;
@@ -70,7 +70,7 @@ internal sealed partial class DcpDependencyCheck : IDcpDependencyCheckService
 
             // 'dcp version' validates the DCP installation without probing the container runtime,
             // which 'dcp info' does and which can hang when the runtime CLI is unresponsive.
-            _dcpInfo = await RunDcpAsync("version", cancellationToken).ConfigureAwait(false);
+            _dcpInfo = await RunDcpAsync(["version"], cancellationToken).ConfigureAwait(false);
             return _dcpInfo;
         }
         finally
@@ -79,7 +79,7 @@ internal sealed partial class DcpDependencyCheck : IDcpDependencyCheckService
         }
     }
 
-    private async Task<DcpInfo> RunDcpAsync(string arguments, CancellationToken cancellationToken)
+    private async Task<DcpInfo> RunDcpAsync(IReadOnlyList<string> arguments, CancellationToken cancellationToken)
     {
         var dcpPath = _dcpOptions.CliPath;
 
@@ -88,40 +88,48 @@ internal sealed partial class DcpDependencyCheck : IDcpDependencyCheckService
             throw new FileNotFoundException($"The Aspire orchestration component is not installed at \"{dcpPath}\". The application cannot be run without it.", dcpPath);
         }
 
-        IAsyncDisposable? processDisposable = null;
-        Task<ProcessResult> task;
+        var commandArguments = string.Join(" ", arguments);
+        using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var outputStringBuilder = new StringBuilder();
         var errorStringBuilder = new StringBuilder();
 
         try
         {
-            var processSpec = new ProcessSpec(dcpPath)
+            var command = new ProcessCommand(dcpPath) { Arguments = arguments };
+            int exitCode;
+            try
             {
-                Arguments = arguments,
-                OnOutputData = s => outputStringBuilder.Append(s),
-                OnErrorData = s => errorStringBuilder.Append(s),
-                ThrowOnNonZeroReturnCode = false
-            };
-
-            (task, processDisposable) = ProcessUtil.Run(processSpec);
-            ProcessResult processResult;
-
-            // Disable timeout if DependencyCheckTimeout is set to zero or a negative value
-            if (_dcpOptions.DependencyCheckTimeout > 0)
-            {
-                processResult = await task.WaitAsync(TimeSpan.FromSeconds(_dcpOptions.DependencyCheckTimeout), cancellationToken).ConfigureAwait(false);
+                exitCode = await _processRunner.CreateExecution(command)
+                    .OnStarted(_ =>
+                    {
+                        // Preserve the post-launch deadline; zero and negative values disable it.
+                        if (_dcpOptions.DependencyCheckTimeout > 0)
+                        {
+                            timeoutSource.CancelAfter(TimeSpan.FromSeconds(_dcpOptions.DependencyCheckTimeout));
+                        }
+                    })
+                    .DecodeChars(Encoding.UTF8)
+                    .FrameLines()
+                    // Legacy probes concatenate lines without delimiters, including whitespace-only records.
+                    .OnStandardOutput(line => outputStringBuilder.Append(line))
+                    .OnStandardError(line => errorStringBuilder.Append(line))
+                    .ExecuteAsync(timeoutSource.Token).ConfigureAwait(false);
             }
-            else
+            catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
             {
-                processResult = await task.WaitAsync(cancellationToken).ConfigureAwait(false);
+                throw new OperationCanceledException(ex.Message, ex, cancellationToken);
+            }
+            catch (OperationCanceledException ex) when (timeoutSource.IsCancellationRequested)
+            {
+                throw new TimeoutException(null, ex);
             }
 
-            if (processResult.ExitCode != 0)
+            if (exitCode != 0)
             {
                 throw new DistributedApplicationException(string.Format(
                     CultureInfo.InvariantCulture,
                     MessageStrings.DcpDependencyCheckFailedMessage,
-                    $"'dcp {arguments}' returned exit code {processResult.ExitCode}. {errorStringBuilder.ToString()}{Environment.NewLine}{outputStringBuilder.ToString()}"
+                    $"'dcp {commandArguments}' returned exit code {exitCode}. {errorStringBuilder.ToString()}{Environment.NewLine}{outputStringBuilder.ToString()}"
                 ));
             }
 
@@ -133,7 +141,7 @@ internal sealed partial class DcpDependencyCheck : IDcpDependencyCheckService
                 throw new DistributedApplicationException(string.Format(
                     CultureInfo.InvariantCulture,
                     MessageStrings.DcpDependencyCheckFailedMessage,
-                    $"'dcp {arguments}' did not return any information. {errorStringBuilder.ToString()}"
+                    $"'dcp {commandArguments}' did not return any information. {errorStringBuilder.ToString()}"
                 ));
             }
 
@@ -148,18 +156,7 @@ internal sealed partial class DcpDependencyCheck : IDcpDependencyCheckService
                 CultureInfo.InvariantCulture,
                 MessageStrings.DcpDependencyCheckFailedMessage,
                 $"{ex.Message} {errorStringBuilder.ToString()}{Environment.NewLine}{outputStringBuilder.ToString()}"
-            ));
-        }
-        finally
-        {
-            if (processDisposable != null)
-            {
-                try
-                {
-                    await processDisposable.DisposeAsync().ConfigureAwait(false);
-                }
-                catch { } // Dispose (dcp process termination) is best effort.
-            }
+            ), ex);
         }
     }
 
